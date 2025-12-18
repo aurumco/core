@@ -143,9 +143,10 @@ class SubspaceExtractor:
         if k < 1:
             k = 1
 
-        U_k = U[:, :k]
-        S_k = S[:k]
-        V_k = Vh[:k, :]  # Vh is V transpose (usually denoted VT)
+        # NOTE: Must be contiguous for safetensors saving
+        U_k = U[:, :k].contiguous()
+        S_k = S[:k].contiguous()
+        V_k = Vh[:k, :].contiguous()  # Vh is V transpose (usually denoted VT)
 
         return {
             "U": U_k.half(),

@@ -4,6 +4,12 @@ This module handles the loading of quantized models using unsloth or transformer
 handling device mapping and error scenarios.
 """
 
+# Unsloth must be imported first to patch transformers correctly
+try:
+    import unsloth  # type: ignore # noqa: F401
+except ImportError:
+    pass
+
 from typing import Any, Tuple
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
