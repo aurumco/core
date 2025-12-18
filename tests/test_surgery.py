@@ -12,6 +12,21 @@ class MockLinear4bit(nn.Module):
     """Mock for bitsandbytes Linear4bit."""
 
     def __init__(self, in_features, out_features):
+        """
+        Initialize a mock 4-bit linear layer with simulated weight metadata and raw 4-bit storage.
+        
+        Parameters:
+            in_features (int): Number of input features.
+            out_features (int): Number of output features.
+        
+        Description:
+            Sets `in_features` and `out_features` and creates `self.weight` as a MagicMock that
+            simulates quantized 4-bit storage by exposing:
+              - `device`: torch.device('cpu')
+              - `dtype`: torch.float16
+              - `quant_state`: a MagicMock representing quantization metadata
+              - `data`: a uint8 Tensor of shape (out_features, in_features // 2) containing raw packed 4-bit values
+        """
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
@@ -59,7 +74,15 @@ def test_should_process_target_modules():
 
 
 def test_process_layer_svd_shape():
-    """Test SVD and truncation shapes (dynamic energy)."""
+    """
+    Verify SVD-based subspace extraction produces correctly shaped factors and meets the configured energy threshold.
+    
+    Asserts that:
+    - The extractor returns factor matrices `U`, `S`, and `Vh` with dtype torch.float32.
+    - The singular values tensor `S` has length equal to the reported `rank`.
+    - `U` has shape (out_features, rank) and `Vh` has shape (rank, in_features).
+    - The reported `energy_preserved` is greater than or equal to the extractor's energy_threshold (0.99 in this test).
+    """
     # High threshold should keep most singular values
     config = SurgeryConfig(energy_threshold=0.99)
     extractor = SubspaceExtractor(config)

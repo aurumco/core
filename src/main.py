@@ -26,7 +26,11 @@ logger = setup_logger(__name__)
 
 
 def main() -> None:
-    """Executes the main pipeline."""
+    """
+    Run the end-to-end AI Subspace Extraction pipeline.
+    
+    This function builds runtime configuration, loads the base model and tokenizer, initializes the extractor and analytics components, and performs per-layer subspace extraction while generating analytics and collecting metadata. It persists a surgery_report.json with per-layer metadata, exports model artifacts (safetensors and optional GGUF/ONNX if supported), packages analytics, metadata, and model artifacts into a final.zip, and attempts to upload the resulting artifact. On any uncaught exception the function logs a critical error and exits the process with status code 1.
+    """
     try:
         # 1. Configuration
         config = AppConfig(

@@ -35,13 +35,16 @@ class ModelLoader:
         self.config = config
 
     def load(self) -> Tuple[Any, Any]:
-        """Loads the model and tokenizer.
-
+        """
+        Load a causal language model and its tokenizer according to the loader configuration.
+        
+        Prefers unsloth's FastLanguageModel; if unsloth is not available or fails, falls back to loading the model and tokenizer via Hugging Face transformers.
+        
         Returns:
-            Tuple[Any, Any]: A tuple containing (model, tokenizer).
-
+            Tuple[Any, Any]: A tuple (model, tokenizer) containing the loaded model and its tokenizer.
+        
         Raises:
-            RuntimeError: If loading fails.
+            RuntimeError: If both unsloth and transformers loading paths fail.
         """
         try:
             logger.info(

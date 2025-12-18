@@ -18,10 +18,11 @@ class AnalyticsEngine:
     """Handles generation of analytics charts and reports."""
 
     def __init__(self, config: PathConfig) -> None:
-        """Initialize the analytics engine.
-
-        Args:
-            config (PathConfig): Path configuration.
+        """
+        Prepare analytics output directories using the provided path configuration.
+        
+        Parameters:
+            config (PathConfig): Configuration containing `analytics_dir`; the constructor ensures `analytics_dir` and a `layers` subdirectory exist, creating them if necessary.
         """
         self.config = config
         self.config.analytics_dir.mkdir(parents=True, exist_ok=True)
@@ -30,13 +31,18 @@ class AnalyticsEngine:
     def generate_layer_charts(
         self, layer_name: str, S: torch.Tensor, k: int, energy_ratio: float
     ) -> None:
-        """Generates Scree Plot and Cumulative Energy chart for a layer.
-
-        Args:
-            layer_name (str): Name of the layer.
-            S (torch.Tensor): Singular values (1D tensor).
-            k (int): Selected rank.
-            energy_ratio (float): Preserved energy ratio.
+        """
+        Generate scree and cumulative energy plots for a given layer and save them to disk.
+        
+        Parameters:
+            layer_name (str): Layer identifier used in plot titles and filenames; dots are replaced with underscores for filenames.
+            S (torch.Tensor): 1D tensor of singular values for the layer.
+            k (int): Cutoff index (selected rank) shown as a vertical line on both plots.
+            energy_ratio (float): Target cumulative energy threshold (0.0–1.0) shown as a horizontal line on the energy plot.
+        
+        Notes:
+            Saves two PNG files to the `analytics_dir/layers` directory in the configured PathConfig:
+            `{safe_name}_scree.png` and `{safe_name}_energy.png`.
         """
         S_np = S.float().cpu().numpy()
         total_energy = np.sum(S_np**2)
@@ -76,10 +82,11 @@ class AnalyticsEngine:
         plt.close()
 
     def generate_rank_distribution(self, metadata_list: List[Dict[str, Any]]) -> None:
-        """Generates a bar chart of rank distribution across layers.
-
-        Args:
-            metadata_list (List[Dict[str, Any]]): List of metadata dicts.
+        """
+        Generate a bar chart showing selected rank per layer and save it to analytics_dir/rank_distribution.png.
+        
+        Parameters:
+            metadata_list (List[Dict[str, Any]]): List of metadata dictionaries each containing at least "layer_name" (str) and "rank" (int). Layer names are abbreviated to the last two dot-separated components for x-axis labels.
         """
         layer_names = [m["layer_name"] for m in metadata_list]
         ranks = [m["rank"] for m in metadata_list]

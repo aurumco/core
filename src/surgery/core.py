@@ -48,13 +48,10 @@ class SubspaceExtractor:
     def extract(
         self, layers: list[tuple[str, nn.Module]]
     ) -> Generator[Tuple[str, Dict[str, Any]], None, None]:
-        """Iterates over provided layers and yields extracted subspaces.
-
-        Args:
-            layers (list[tuple[str, nn.Module]]): List of layers to process.
-
-        Yields:
-            Tuple[str, Dict[str, Any]]: (layer_name, result_dict).
+        """
+        Yield extracted subspace data for each provided layer.
+        
+        Yields a tuple containing the layer name and a dictionary with the extracted subspace and metadata. The dictionary includes the top-k components under the keys "U", "S", "Vh", the chosen "rank", "energy_preserved" ratio, "original_size", and "compressed_size". After yielding each result the method performs CUDA memory cleanup. If processing a layer fails, the exception is logged and re-raised.
         """
         for name, module in layers:
             try:
@@ -102,13 +99,21 @@ class SubspaceExtractor:
         return True
 
     def _process_layer(self, layer: nn.Module) -> Dict[str, Any]:
-        """Performs SVD and truncation on a single layer using dynamic energy threshold.
-
-        Args:
-            layer (nn.Module): The layer to process.
-
+        """
+        Perform SVD on a layer's weight, truncate components by an energy threshold, replace the layer's weight in-place with the low-rank approximation, and return the retained subspace metadata.
+        
+        Parameters:
+            layer (nn.Module): Layer whose `weight` will be processed. Supports standard `nn.Linear` and `Linear4bit` (dequantized); the layer's weight tensor is replaced in-place with the reconstructed low-rank approximation.
+        
         Returns:
-            Dict[str, Any]: Contains "U", "S", "Vh", "rank", "energy_preserved".
+            dict: A dictionary with the following keys:
+                - "U" (torch.Tensor): Contiguous matrix of left singular vectors for the top-k components.
+                - "S" (torch.Tensor): Contiguous vector of singular values for the top-k components.
+                - "Vh" (torch.Tensor): Contiguous matrix of right singular vectors (transposed) for the top-k components.
+                - "rank" (int): Number of retained components (k).
+                - "energy_preserved" (float): Fraction of total squared singular-value energy preserved by the top-k components.
+                - "original_size" (int): Number of elements in the original weight tensor.
+                - "compressed_size" (int): Sum of element counts of U_k, S_k, and Vh_k.
         """
         # 1. Get Weights (Always cast to float32 for SVD stability)
         # Note: If layer is Linear4bit, we dequantize. If it's already bf16/fp16, we cast.

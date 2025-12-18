@@ -50,32 +50,64 @@ class PathConfig:
 
     @property
     def model_4bit_dir(self) -> Path:
-        """Returns the directory for final 4-bit model."""
+        """
+        Directory path for the finalized 4-bit model.
+        
+        Returns:
+            Path: Path to the "model_4bit" subdirectory inside the configured output directory.
+        """
         return self.output_dir / "model_4bit"
 
     @property
     def extraction_dir(self) -> Path:
-        """Returns the directory for extracted tensors (legacy support)."""
+        """
+        Path to the directory where extracted tensors are stored (legacy support).
+        
+        Returns:
+            Path: Directory for extracted tensors, computed as `output_dir / "extracted_subspace"`. Kept for backward compatibility.
+        """
         return self.output_dir / "extracted_subspace"
 
     @property
     def adapters_dir(self) -> Path:
-        """Returns the directory for adapter configurations (legacy support)."""
+        """
+        Directory path for adapter configurations (legacy support).
+        
+        Provided for backward compatibility; returns the path to the "adapters" subdirectory under the configured output_dir.
+        
+        Returns:
+            Path: Path to the adapters directory.
+        """
         return self.output_dir / "adapters"
 
     @property
     def analytics_dir(self) -> Path:
-        """Returns the directory for analytics reports."""
+        """
+        Provide the path to the analytics reports directory.
+        
+        Returns:
+            Path: Path to the analytics reports directory (equivalent to output_dir / "analytics").
+        """
         return self.output_dir / "analytics"
 
     @property
     def metadata_dir(self) -> Path:
-        """Returns the directory for surgery metadata."""
+        """
+        Provide the path to the surgery metadata directory.
+        
+        Returns:
+            metadata_dir (Path): Path pointing to the `metadata` subdirectory inside `output_dir`.
+        """
         return self.output_dir / "metadata"
 
     @property
     def backup_dir(self) -> Path:
-        """Returns the directory for zipped archives."""
+        """
+        Get the path to the backup directory used for zipped archives.
+        
+        Returns:
+            backup_dir (Path): Path to the directory where backup (zipped) archives are stored.
+        """
         return self.output_dir / "backup"
 
 

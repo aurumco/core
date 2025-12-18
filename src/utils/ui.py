@@ -21,7 +21,17 @@ class ConsoleUI:
 
     @staticmethod
     def print_header(config: AppConfig) -> None:
-        """Prints the startup banner and configuration table."""
+        """
+        Display the startup banner and a formatted configuration summary to stdout.
+        
+        Prints an ASCII banner followed by a CONFIGURATION section that includes:
+        - Model details: `model_name`, `quantization_bit` (shown as “-bit”), and `device_map`.
+        - Surgery details: `energy_threshold` and `target_modules` (falls back to "All Linear" when falsy).
+        - Paths: `output_dir`.
+        
+        Parameters:
+            config (AppConfig): Application configuration providing `model`, `surgery`, and `paths` attributes used in the output.
+        """
         print(f"\033[1;36m{BANNER}\033[0m")
         print("=" * 60)
         print(" \033[1mCONFIGURATION\033[0m")
