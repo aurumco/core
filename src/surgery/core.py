@@ -30,36 +30,49 @@ class SubspaceExtractor:
         """
         self.config = config
 
-    def extract(
-        self, model: nn.Module
-    ) -> Generator[Tuple[str, Dict[str, torch.Tensor]], None, None]:
-        """Iterates over model layers and yields extracted subspaces.
+    def get_target_layers(self, model: nn.Module) -> list[tuple[str, nn.Module]]:
+        """Identifies all layers to be processed.
 
         Args:
-            model (nn.Module): The model to process.
+            model (nn.Module): The model to scan.
+
+        Returns:
+            list[tuple[str, nn.Module]]: List of (name, module) tuples.
+        """
+        targets = []
+        for name, module in model.named_modules():
+            if self._should_process(name, module):
+                targets.append((name, module))
+        return targets
+
+    def extract(
+        self, layers: list[tuple[str, nn.Module]]
+    ) -> Generator[Tuple[str, Dict[str, torch.Tensor]], None, None]:
+        """Iterates over provided layers and yields extracted subspaces.
+
+        Args:
+            layers (list[tuple[str, nn.Module]]): List of layers to process.
 
         Yields:
             Tuple[str, Dict[str, torch.Tensor]]: (layer_name, {U, S, V}).
         """
-        for name, module in model.named_modules():
-            if self._should_process(name, module):
-                logger.info(f"Processing layer: {name}")
-                try:
-                    subspace = self._process_layer(module)
-                    yield name, subspace
+        for name, module in layers:
+            try:
+                subspace = self._process_layer(module)
+                yield name, subspace
 
-                    # Explicit cleanup to manage VRAM
-                    del subspace
-                    torch.cuda.empty_cache()
+                # Explicit cleanup to manage VRAM
+                del subspace
+                torch.cuda.empty_cache()
 
-                except Exception as e:
-                    logger.error(f"Failed to process layer {name}: {e}", exc_info=True)
-                    # Continue to next layer instead of crashing entire pipeline?
-                    # Constitution says "Silence is unacceptable", raising is better
-                    # but for a long process, logging error and moving on might be preferred
-                    # if possible. However, Article V says "Actionable".
-                    # We will re-raise to ensure integrity.
-                    raise
+            except Exception as e:
+                logger.error(f"Failed to process layer {name}: {e}", exc_info=True)
+                # Continue to next layer instead of crashing entire pipeline?
+                # Constitution says "Silence is unacceptable", raising is better
+                # but for a long process, logging error and moving on might be preferred
+                # if possible. However, Article V says "Actionable".
+                # We will re-raise to ensure integrity.
+                raise
 
     def _should_process(self, name: str, module: nn.Module) -> bool:
         """Determines if a layer should be processed.
@@ -129,10 +142,6 @@ class SubspaceExtractor:
             surgery_device = torch.device(f"cuda:{target_idx}")
 
         try:
-            # Only log for large layers to avoid clutter
-            if weight.numel() > 10000000:
-                logger.info(f"  -> Offloading SVD to {surgery_device}...")
-
             # Move weight to surgery device
             # We cast to float32 because SVD is generally more stable on float32
             # and CPU requires it anyway.
