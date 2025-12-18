@@ -4,7 +4,7 @@ This module implements the subspace extraction via SVD and truncation
 on quantized model layers.
 """
 
-from typing import Dict, Generator, Tuple
+from typing import Dict, Generator, Tuple, Any
 import torch
 import torch.nn as nn
 from bitsandbytes.nn import Linear4bit  # type: ignore
@@ -47,14 +47,14 @@ class SubspaceExtractor:
 
     def extract(
         self, layers: list[tuple[str, nn.Module]]
-    ) -> Generator[Tuple[str, Dict[str, torch.Tensor]], None, None]:
+    ) -> Generator[Tuple[str, Dict[str, Any]], None, None]:
         """Iterates over provided layers and yields extracted subspaces.
 
         Args:
             layers (list[tuple[str, nn.Module]]): List of layers to process.
 
         Yields:
-            Tuple[str, Dict[str, torch.Tensor]]: (layer_name, {U, S, V}).
+            Tuple[str, Dict[str, Any]]: (layer_name, result_dict).
         """
         for name, module in layers:
             try:
@@ -101,85 +101,113 @@ class SubspaceExtractor:
 
         return True
 
-    def _process_layer(self, layer: nn.Module) -> Dict[str, torch.Tensor]:
-        """Performs SVD and truncation on a single layer using optimal device.
-
-        Complexity: O(min(m,n)^2 * max(m,n)) for SVD.
+    def _process_layer(self, layer: nn.Module) -> Dict[str, Any]:
+        """Performs SVD and truncation on a single layer using dynamic energy threshold.
 
         Args:
             layer (nn.Module): The layer to process.
 
         Returns:
-            Dict[str, torch.Tensor]: Dictionary containing U, S, V tensors.
+            Dict[str, Any]: Contains "U", "S", "Vh", "rank", "energy_preserved".
         """
-        # 1. Dequantize / Get Weights
-        if isinstance(layer, Linear4bit):
-            # bitsandbytes stores weights in .weight which is a Params4bit object.
-            # We must use dequantize_4bit to get the actual float values.
-            # layer.weight.quant_state holds the quantization parameters.
-            weight = F.dequantize_4bit(
-                layer.weight.data, layer.weight.quant_state  # type: ignore
-            ).half()
-        elif hasattr(layer, "weight"):
-            # Handle standard Linear and Unsloth/Custom layers via duck typing
-            # Cast to half to ensure we don't blow up memory with float32
-            # Mypy sees layer.weight as Any or Module usually, we need to be explicit about .data
-            weight = layer.weight.data.half()  # type: ignore
+        # 1. Get Weights (Always cast to float32 for SVD stability)
+        # Note: If layer is Linear4bit, we dequantize. If it's already bf16/fp16, we cast.
+
+        if hasattr(layer, "weight"):
+            # Check if it's 4-bit (shouldn't be in this new pipeline but good to handle)
+            if isinstance(layer, Linear4bit):
+                weight = F.dequantize_4bit(
+                    layer.weight.data, layer.weight.quant_state  # type: ignore
+                ).float()
+            else:
+                weight = layer.weight.data.float()  # type: ignore
         else:
             raise ValueError(f"Unsupported layer type: {type(layer)}")
 
         # 2. SVD Strategy: Offload to Free GPU
         torch.cuda.empty_cache()
-
-        # Default to current device
         surgery_device = weight.device
 
-        # If multiple GPUs, try to offload to the other one
+        # Ping-Pong Strategy
         if torch.cuda.device_count() > 1 and weight.device.type == "cuda":
             current_idx = weight.device.index if weight.device.index is not None else 0
-            # Switch between 0 and 1 (assuming 2 GPUs context)
             target_idx = 1 - current_idx
             surgery_device = torch.device(f"cuda:{target_idx}")
 
         try:
-            # Move weight to surgery device
-            # We cast to float32 because SVD is generally more stable on float32
-            # and CPU requires it anyway.
-            weight_for_svd = weight.to(surgery_device).float()
+            if weight.numel() > 10000000:
+                logger.info(f"  -> Offloading SVD to {surgery_device}...")
 
+            weight_for_svd = weight.to(surgery_device)
             U, S, Vh = torch.linalg.svd(weight_for_svd, full_matrices=False)
 
-            # Move results back to original device (to clear surgery device VRAM)
+            # Move results back
             U = U.to(weight.device)
             S = S.to(weight.device)
             Vh = Vh.to(weight.device)
 
-            # Cleanup surgery device
             del weight_for_svd
             torch.cuda.empty_cache()
 
         except RuntimeError:
-            # Fallback to CPU if OOM even on second GPU
-            logger.warning(f"  -> GPU SVD failed on {surgery_device}. Fallback to CPU.")
-            weight_cpu = weight.cpu().float()
+            logger.warning("  -> GPU SVD failed. Fallback to CPU.")
+            weight_cpu = weight.cpu()
             U, S, Vh = torch.linalg.svd(weight_cpu, full_matrices=False)
             device = weight.device
             U = U.to(device)
             S = S.to(device)
             Vh = Vh.to(device)
 
-        # 3. Truncation
-        k = int(len(S) * self.config.truncation_ratio)
-        if k < 1:
-            k = 1
+        # 3. Dynamic Truncation (Energy Threshold)
+        # E = sum(sigma^2)
+        S_squared = S**2
+        total_energy = torch.sum(S_squared)
+        cumulative_energy = torch.cumsum(S_squared, dim=0)
 
-        # NOTE: Must be contiguous for safetensors saving
-        U_k = U[:, :k].contiguous()
-        S_k = S[:k].contiguous()
-        V_k = Vh[:k, :].contiguous()  # Vh is V transpose (usually denoted VT)
+        # Find k where cumulative energy >= threshold * total
+        threshold_energy = self.config.energy_threshold * total_energy
+        # torch.searchsorted requires sorted sequence. cumulative is sorted ascending.
+        k_val = torch.searchsorted(cumulative_energy, threshold_energy).item()
+        # Ensure k is int and 1-based index
+        k = int(k_val) + 1
+
+        # Safety bounds
+        k = max(1, min(k, len(S)))
+
+        # Reconstruct Weight W' = U_k * S_k * Vh_k
+        U_k = U[:, :k]
+        S_k = S[:k]
+        Vh_k = Vh[:k, :]
+
+        # Reconstruct approximation
+        W_approx = torch.matmul(U_k, torch.matmul(torch.diag(S_k), Vh_k))
+
+        # 4. In-Place Update of Model Weights
+        # We replace the layer's weight with the approximated weight.
+        # This prepares the model for QAT/Quantization.
+        # Convert back to original dtype (likely bf16 or fp16)
+        # Type ignore: we assume these properties exist on the layer.weight
+        original_dtype = (
+            layer.weight.dtype if not isinstance(layer, Linear4bit) else torch.bfloat16
+        )  # Assumption
+
+        if isinstance(layer, nn.Linear):
+            # Explicit cast to dtype required by mypy
+            # Cast original_dtype to torch.dtype just to be safe for mypy if it inferred Union
+            layer.weight.data = W_approx.to(dtype=original_dtype)  # type: ignore
+        else:
+            # If complex layer (Unsloth), try assigning to .weight.data
+            # Be precise with arguments for to()
+            target_device = layer.weight.device
+            target_dtype = layer.weight.dtype
+            layer.weight.data = W_approx.to(device=target_device, dtype=target_dtype)  # type: ignore
 
         return {
-            "U": U_k.half(),
-            "S": S_k.half(),
-            "Vh": V_k.half(),  # Renamed key to Vh as requested
+            "U": U_k.contiguous(),  # Keep if we want to save subspace
+            "S": S_k.contiguous(),
+            "Vh": Vh_k.contiguous(),
+            "rank": k,
+            "energy_preserved": float((cumulative_energy[k - 1] / total_energy).item()),
+            "original_size": weight.numel(),
+            "compressed_size": U_k.numel() + S_k.numel() + Vh_k.numel(),
         }

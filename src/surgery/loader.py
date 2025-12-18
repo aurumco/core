@@ -12,7 +12,7 @@ except ImportError:
 
 from typing import Any, Tuple
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from src.config import ModelConfig
 from src.utils.logging import setup_logger
 
@@ -53,13 +53,14 @@ class ModelLoader:
             try:
                 from unsloth import FastLanguageModel
 
+                # We load in 16-bit (bfloat16) as requested for "Genetic Engineering"
                 model, tokenizer = FastLanguageModel.from_pretrained(
                     model_name=self.config.model_name,
-                    max_seq_length=2048,  # Default safe value
-                    dtype=None,  # Auto detection
-                    load_in_4bit=self.config.quantization_bit == 4,
+                    max_seq_length=2048,
+                    dtype=torch.bfloat16,
+                    load_in_4bit=False,
                 )
-                logger.info("Loaded model using unsloth")
+                logger.info("Loaded model using unsloth (bfloat16)")
                 return model, tokenizer
             except ImportError:
                 logger.warning("Unsloth not found, falling back to transformers")
@@ -68,19 +69,10 @@ class ModelLoader:
                     f"Unsloth loading failed: {e}. Falling back to transformers"
                 )
 
-            # Fallback to transformers
-            bnb_config = None
-            if self.config.quantization_bit == 4:
-                bnb_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_quant_type="nf4",
-                    bnb_4bit_use_double_quant=True,
-                    bnb_4bit_compute_dtype=torch.float16,
-                )  # type: ignore
-
+            # Fallback to transformers (16-bit)
             model = AutoModelForCausalLM.from_pretrained(
                 self.config.model_name,
-                quantization_config=bnb_config,
+                torch_dtype=torch.bfloat16,
                 device_map=self.config.device_map,
                 trust_remote_code=True,  # nosec B615
             )

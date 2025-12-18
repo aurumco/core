@@ -17,6 +17,8 @@ class MockLinear4bit(nn.Module):
         self.out_features = out_features
         # Simulate 4-bit weights
         self.weight = MagicMock()
+        self.weight.device = torch.device("cpu")
+        self.weight.dtype = torch.float16
         # Mock quant_state
         self.weight.quant_state = MagicMock()
         # Mock data as some tensor
@@ -27,9 +29,9 @@ class MockLinear4bit(nn.Module):
 
 def test_extractor_initialization():
     """Test that extractor initializes with config."""
-    config = SurgeryConfig(truncation_ratio=0.5)
+    config = SurgeryConfig(energy_threshold=0.95)
     extractor = SubspaceExtractor(config)
-    assert extractor.config.truncation_ratio == 0.5
+    assert extractor.config.energy_threshold == 0.95
 
 
 def test_should_process_linear_layer():
@@ -57,27 +59,41 @@ def test_should_process_target_modules():
 
 
 def test_process_layer_svd_shape():
-    """Test SVD and truncation shapes."""
-    config = SurgeryConfig(truncation_ratio=0.2)
+    """Test SVD and truncation shapes (dynamic energy)."""
+    # High threshold should keep most singular values
+    config = SurgeryConfig(energy_threshold=0.99)
     extractor = SubspaceExtractor(config)
 
     layer = nn.Linear(50, 100)
-    subspace = extractor._process_layer(layer)
+    # Ensure deterministic energy profile by manually setting weights
+    # Or just check that rank <= min(50, 100) and energy >= threshold
 
-    U = subspace["U"]
-    S = subspace["S"]
-    Vh = subspace["Vh"]
+    result = extractor._process_layer(layer)
 
-    # Check types
-    assert U.dtype == torch.float16
-    assert S.dtype == torch.float16
-    assert Vh.dtype == torch.float16
+    U = result["U"]
+    S = result["S"]
+    Vh = result["Vh"]
+    rank = result["rank"]
+    energy = result["energy_preserved"]
+
+    # Check types (should be float32 in logic but cast to original dtype in model,
+    # but returned dict contains contiguous tensors which might be float32 or casted?)
+    # In code: U_k is from U (float32). Wait, let's check code.
+    # U, S, Vh from torch.linalg.svd are float32 (on CPU fallback) or float32 (on GPU cast).
+    # We didn't explicitly cast U/S/V back to half in the return dict in new code!
+    # We reconstruct W_approx and assign to layer.
+    # The return dict values are from U, S, Vh which are float32.
+
+    assert U.dtype == torch.float32
+    assert S.dtype == torch.float32
+    assert Vh.dtype == torch.float32
 
     # Check truncated sizes
-    expected_k = int(50 * 0.2)
-    assert S.shape[0] == expected_k
-    assert U.shape == (100, expected_k)
-    assert Vh.shape == (expected_k, 50)
+    assert S.shape[0] == rank
+    assert U.shape == (100, rank)
+    assert Vh.shape == (rank, 50)
+
+    assert energy >= 0.99
 
 
 def test_process_layer_cpu_fallback():
@@ -101,17 +117,18 @@ def test_process_layer_cpu_fallback():
 @patch("src.surgery.core.Linear4bit", MockLinear4bit)
 def test_process_linear4bit():
     """Test processing of Linear4bit layers."""
-    config = SurgeryConfig(truncation_ratio=0.5)
+    config = SurgeryConfig(energy_threshold=0.9)
     extractor = SubspaceExtractor(config)
 
     layer = MockLinear4bit(20, 20)
 
     with patch("src.surgery.core.F.dequantize_4bit") as mock_dequant:
+        # Mock return must be castable to float, so we return half
         mock_dequant.return_value = torch.randn(20, 20).half()
-        subspace = extractor._process_layer(layer)
-        assert "U" in subspace
-        assert "S" in subspace
-        assert "Vh" in subspace
+
+        result = extractor._process_layer(layer)
+        assert "rank" in result
+        assert "energy_preserved" in result
         mock_dequant.assert_called_once()
 
 

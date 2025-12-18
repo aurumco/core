@@ -34,7 +34,7 @@ class ConsoleUI:
 
         # Surgery Details
         print("-" * 60)
-        print(f" \033[1;33mTruncation Ratio:\033[0m {config.surgery.truncation_ratio}")
+        print(f" \033[1;33mEnergy Threshold:\033[0m {config.surgery.energy_threshold}")
         print(
             f" \033[1;33mTarget Modules:\033[0m {config.surgery.target_modules or 'All Linear'}"
         )

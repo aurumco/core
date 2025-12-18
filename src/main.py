@@ -7,13 +7,13 @@ import json
 import sys
 import zipfile
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Any, List
 
 from safetensors.torch import load_file, save_file
 import torch
 
+from src.analytics.engine import AnalyticsEngine
 from src.config import AppConfig, ModelConfig, PathConfig, SurgeryConfig
-from src.surgery.adapter import AdapterGenerator
 from src.surgery.core import SubspaceExtractor
 from src.surgery.loader import ModelLoader
 from huggingface_hub import HfApi
@@ -31,103 +31,148 @@ def main() -> None:
         # 1. Configuration
         config = AppConfig(
             model=ModelConfig(
-                model_name="unsloth/Qwen3-8B-unsloth-bnb-4bit",
+                model_name="Qwen/Qwen3-8B",  # Changed to 16-bit Qwen3
                 device_map="auto",
-                quantization_bit=4,
+                quantization_bit=16,  # bfloat16
             ),
-            surgery=SurgeryConfig(truncation_ratio=0.2),
+            surgery=SurgeryConfig(energy_threshold=0.99),
             paths=PathConfig(output_dir=Path("output")),
         )
 
         ConsoleUI.print_header(config)
 
-        # 2. Load Model
-        ConsoleUI.status_update("Loading Model... (This may take time)")
+        # 2. Load Model (16-bit)
+        ConsoleUI.status_update("Loading Base Model (Qwen3-8B)...")
         loader = ModelLoader(config.model)
         model, tokenizer = loader.load()
         ConsoleUI.status_update("Model Loaded Successfully.")
 
         # 3. Initialize Components
         extractor = SubspaceExtractor(config.surgery)
-        adapter_gen = AdapterGenerator(config.surgery)
-        serializer = ModelSerializer(config.paths)
+        # Serializer available for future saving needs
+        _ = ModelSerializer(config.paths)
+        analytics = AnalyticsEngine(config.paths)
 
-        # 4. Surgery Loop
+        # 4. Surgery Loop (Genetic Engineering)
         target_layers = extractor.get_target_layers(model)
         total_layers = len(target_layers)
 
-        # Keep track of target modules for adapter config
-        target_modules_set = set()
+        metadata_list: List[Dict[str, Any]] = []
 
-        # Initialize generator with target list
         surgery_iter = extractor.extract(target_layers)
 
-        # Use simple ASCII progress bar
-        print(f"\n Starting Surgery on {total_layers} layers...")
-
+        print(f"\n Executing Genetic Engineering on {total_layers} layers...")
         pbar = ConsoleUI.progress_bar(
             surgery_iter, total=total_layers, prefix="Surgery"
         )
 
-        for i, (layer_name, subspace) in enumerate(pbar):
-            # Save raw subspace
-            serializer.save_layer_subspace(layer_name, subspace)
+        # Explicitly typing the tuple to avoid mypy confusion if possible,
+        # though pbar returns object. We cast implicitly by unpacking.
+        for i, (layer_name, result) in enumerate(pbar):  # type: ignore
+            # result contains 'U', 'S', 'Vh', 'rank', etc.
 
-            # Generate and save adapter shard
-            adapter_weights = adapter_gen.generate(subspace)
-            serializer.save_adapter(layer_name, adapter_weights)
+            # 1. Analytics & Visualization
+            analytics.generate_layer_charts(
+                layer_name, result["S"], result["rank"], result["energy_preserved"]
+            )
 
-            # Extract module name (last part)
-            module_suffix = layer_name.split(".")[-1]
-            target_modules_set.add(module_suffix)
+            # 2. Collect Metadata
+            meta = {
+                "layer_name": layer_name,
+                "rank": result["rank"],
+                "energy_preserved": result["energy_preserved"],
+                "original_size": result["original_size"],
+                "compressed_size": result["compressed_size"],
+            }
+            metadata_list.append(meta)
 
-            # Log completion of layer to debug log (hidden from UI unless error)
+            # 3. Save Subspace (Optional, skipping huge save to save disk space, analytics are saved)
+            # serializer.save_layer_subspace(layer_name, result)
+
             logger.debug(f"Processed {layer_name}")
 
-        print("\n")  # Clear line after progress bar
+        print("\n")
 
-        # 5. Aggregate Adapter Shards
-        ConsoleUI.status_update("Aggregating adapter shards...")
-        _aggregate_adapters(config, target_modules_set)
+        # 5. Generate Aggregate Analytics
+        ConsoleUI.status_update("Generating Global Analytics...")
+        analytics.generate_rank_distribution(metadata_list)
 
-        # 6. Save Model Configuration (Base Model)
-        ConsoleUI.status_update("Saving base model configuration...")
-        config.paths.base_model_dir.mkdir(parents=True, exist_ok=True)
-        model.config.save_pretrained(config.paths.base_model_dir)
-        tokenizer.save_pretrained(config.paths.base_model_dir)
+        # Save Metadata JSON
+        config.paths.metadata_dir.mkdir(parents=True, exist_ok=True)
+        with open(config.paths.metadata_dir / "surgery_report.json", "w") as f:
+            json.dump(metadata_list, f, indent=2)
 
-        # 6. Create Adapters Directory (Structure compliance)
-        config.paths.adapters_dir.mkdir(parents=True, exist_ok=True)
+        # 6. Unsloth Quantization & Export
+        ConsoleUI.status_update("Quantizing & Exporting (Safetensors/GGUF)...")
 
-        # 7. Antifragile Export (Compression)
-        logger.info("Surgery complete. Compressing artifacts...")
+        # Create output dir
+        config.paths.model_4bit_dir.mkdir(parents=True, exist_ok=True)
+
+        # Use FastLanguageModel for quantization if available
+        try:
+            # 1. Safetensors (16-bit distilled)
+            model.save_pretrained(
+                config.paths.model_4bit_dir / "safetensors", safe_serialization=True
+            )
+            tokenizer.save_pretrained(config.paths.model_4bit_dir / "safetensors")
+
+            # 2. GGUF Export (via Unsloth if methods exist, else skip or warn)
+            if hasattr(model, "save_pretrained_gguf"):
+                model.save_pretrained_gguf(
+                    str(config.paths.model_4bit_dir / "gguf"),
+                    tokenizer,
+                    quantization_method="q4_k_m",
+                )
+            else:
+                logger.warning("Unsloth GGUF export method not found on model.")
+
+            # 3. ONNX Export
+            # Using Optimum for ONNX export
+            try:
+                from optimum.exporters.onnx import main_export
+
+                onnx_output = config.paths.model_4bit_dir / "onnx"
+                onnx_output.mkdir(exist_ok=True)
+
+                # Exporting LLMs to ONNX is heavy. We export to a folder.
+                # Note: This usually requires the 'optimum' and 'onnx' packages.
+                main_export(
+                    config.paths.model_4bit_dir
+                    / "safetensors",  # Source model path (we just saved it)
+                    output=onnx_output,
+                    task="text-generation",
+                    device="cpu",  # Export usually on CPU to avoid complex OOM during trace
+                    fp16=True,  # Use fp16 for size
+                )
+            except ImportError:
+                logger.warning("Optimum not installed. Skipping ONNX export.")
+            except Exception as ex:
+                logger.error(f"ONNX export failed: {ex}")
+
+        except Exception as e:
+            logger.error(f"Export failed: {e}")
+
+        # 7. Final Packaging
+        ConsoleUI.status_update("Packaging Artifacts...")
         archive_path = config.paths.backup_dir
         archive_path.mkdir(parents=True, exist_ok=True)
 
-        zip_filename = archive_path / "subspace_extraction.zip"
+        zip_filename = archive_path / "final.zip"
         target_folders = [
-            config.paths.base_model_dir,
-            config.paths.extraction_dir,
-            config.paths.adapters_dir,
+            config.paths.model_4bit_dir,
+            config.paths.analytics_dir,
+            config.paths.metadata_dir,
         ]
 
         with zipfile.ZipFile(zip_filename, "w", zipfile.ZIP_DEFLATED) as zf:
             for folder in target_folders:
                 if folder.exists():
-                    # Preserve structure: /base_model/config.json -> base_model/config.json
-                    # We walk relative to output_dir so base_model is at root of zip
                     for file in folder.rglob("*"):
                         if file.is_file():
-                            # Ensure we don't zip the zip file itself if paths overlap (unlikely here)
-                            if file == zip_filename:
-                                continue
-
                             arcname = file.relative_to(config.paths.output_dir)
                             zf.write(file, arcname=arcname)
 
-        logger.info(f"Artifacts compressed to {zip_filename}")
-
-        # 8. Dummy Upload Hook
+        logger.info(f"Pipeline Complete. Output: {zip_filename}")
         _upload_artifacts(zip_filename)
 
     except Exception as e:
