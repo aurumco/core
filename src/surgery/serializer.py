@@ -49,6 +49,25 @@ class ModelSerializer:
         # A single safetensors file per layer is cleaner.
         save_file(subspace, layer_dir / "subspace.safetensors")
 
+    def save_adapter(
+        self, layer_name: str, adapter_weights: Dict[str, torch.Tensor]
+    ) -> None:
+        """Saves LoRA adapter weights for a single layer (shard).
+
+        Args:
+            layer_name (str): The name of the layer.
+            adapter_weights (Dict[str, torch.Tensor]): Contains "lora_A", "lora_B".
+        """
+        # Save as a shard in a temp/shards directory
+        # Sanitize layer name
+        safe_name = layer_name.replace(".", "_")
+
+        # Structure: output/adapters/shards/{layer_name}/adapter_shard.safetensors
+        shard_dir = self.config.adapters_dir / "shards" / safe_name
+        shard_dir.mkdir(parents=True, exist_ok=True)
+
+        save_file(adapter_weights, shard_dir / "adapter_shard.safetensors")
+
     def save_metadata(self, metadata: Dict[str, Any]) -> None:
         """Saves metadata about the extraction process.
 
