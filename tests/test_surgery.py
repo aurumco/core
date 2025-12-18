@@ -69,12 +69,12 @@ def test_process_layer_svd_shape():
 
     U = subspace["U"]
     S = subspace["S"]
-    V = subspace["V"]
+    Vh = subspace["Vh"]
 
     # Check types
     assert U.dtype == torch.float16
     assert S.dtype == torch.float16
-    assert V.dtype == torch.float16
+    assert Vh.dtype == torch.float16
 
     # Check truncated sizes
     # Full S has min(100, 50) = 50 values
@@ -83,7 +83,7 @@ def test_process_layer_svd_shape():
 
     assert S.shape[0] == expected_k
     assert U.shape == (100, expected_k)
-    assert V.shape == (expected_k, 50)
+    assert Vh.shape == (expected_k, 50)
 
 
 def test_process_layer_cpu_fallback():
@@ -124,12 +124,12 @@ def test_process_linear4bit():
     # We need to mock bitsandbytes.functional.dequantize_4bit
     with patch("src.surgery.core.F.dequantize_4bit") as mock_dequant:
         # Return a random float tensor of correct shape (out, in)
-        mock_dequant.return_value = torch.randn(20, 20)
+        mock_dequant.return_value = torch.randn(20, 20).half()
 
         subspace = extractor._process_layer(layer)
 
         assert "U" in subspace
         assert "S" in subspace
-        assert "V" in subspace
+        assert "Vh" in subspace
         # Verify dequantize was called
         mock_dequant.assert_called_once()

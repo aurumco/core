@@ -71,7 +71,14 @@ class SubspaceExtractor:
         Returns:
             bool: True if should be processed.
         """
+        # Strict type check or Duck typing for Unsloth layers
         is_linear = isinstance(module, (nn.Linear, Linear4bit))
+        if not is_linear:
+            # Check for Unsloth or other custom Linear layers via class name and attributes
+            class_name = module.__class__.__name__
+            has_weight = hasattr(module, "weight")
+            if "Linear" in class_name and has_weight:
+                is_linear = True
 
         if not is_linear:
             return False
@@ -93,32 +100,43 @@ class SubspaceExtractor:
             Dict[str, torch.Tensor]: Dictionary containing U, S, V tensors.
         """
         # 1. Dequantize / Get Weights
-        # Move to float16 for precision during SVD
+        # Use float16 (half) to save memory as requested.
         if isinstance(layer, Linear4bit):
             # bitsandbytes stores weights in .weight which is a Params4bit object.
             # We must use dequantize_4bit to get the actual float values.
             # layer.weight.quant_state holds the quantization parameters.
             weight = F.dequantize_4bit(
                 layer.weight.data, layer.weight.quant_state  # type: ignore
-            ).float()
-        elif isinstance(layer, nn.Linear):
-            weight = layer.weight.data.float()
+            ).half()
+        elif hasattr(layer, "weight"):
+            # Handle standard Linear and Unsloth/Custom layers via duck typing
+            # Cast to half to ensure we don't blow up memory with float32
+            # Mypy sees layer.weight as Any or Module usually, we need to be explicit about .data
+            weight = layer.weight.data.half()  # type: ignore
         else:
             raise ValueError(f"Unsupported layer type: {type(layer)}")
 
         # 2. SVD
-        # Use float32 for stability in SVD if possible, or float16 if VRAM is tight.
-        # Given dual T4, we have some room, but large layers (4096*4096) are big.
-        # SVD on GPU is faster.
+        # Clear cache before SVD to maximize available VRAM
+        torch.cuda.empty_cache()
+
         try:
             # Perform SVD
+            # Note: svd on CUDA supports half, but on CPU it requires float32.
+            if weight.device.type == "cpu":
+                weight = weight.float()
             U, S, Vh = torch.linalg.svd(weight, full_matrices=False)
         except RuntimeError:
             # Fallback to CPU if OOM
             logger.warning("GPU SVD failed (likely OOM), falling back to CPU")
-            weight_cpu = weight.cpu()
+            # Move to CPU for SVD and cast to float32 as CPU SVD doesn't support half
+            weight_cpu = weight.cpu().float()
             U, S, Vh = torch.linalg.svd(weight_cpu, full_matrices=False)
-            U, S, Vh = U.to(weight.device), S.to(weight.device), Vh.to(weight.device)
+            # Move results back to original device
+            device = weight.device
+            U = U.to(device)
+            S = S.to(device)
+            Vh = Vh.to(device)
 
         # 3. Truncation
         k = int(len(S) * self.config.truncation_ratio)
@@ -130,7 +148,7 @@ class SubspaceExtractor:
         V_k = Vh[:k, :]  # Vh is V transpose (usually denoted VT)
 
         return {
-            "U": U_k.half(),  # Store as half to save space
+            "U": U_k.half(),
             "S": S_k.half(),
-            "V": V_k.half(),  # This is V^T actually, consistent with torch.linalg.svd output
+            "Vh": V_k.half(),  # Renamed key to Vh as requested
         }
