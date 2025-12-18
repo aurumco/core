@@ -6,39 +6,56 @@ Constitution's guidelines for observability and error handling.
 
 import logging
 import sys
+import os
 
 # Constants
-# Simple clean format: [TIME] [LEVEL] MESSAGE
+# Minimalist Format: [TIME] [LEVEL] MESSAGE
 LOG_FORMAT = "[%(asctime)s] [%(levelname)s] %(message)s"
 DATE_FORMAT = "%H:%M:%S"
 
 
-def setup_logger(
-    name: str = "ai_core_extractor", level: int = logging.INFO
-) -> logging.Logger:
-    """Configures and returns a logger instance.
+class ContextFilter(logging.Filter):
+    """Filters out noisy logs from external libraries."""
 
-    Args:
-        name (str, optional): Name of the logger. Defaults to "ai_core_extractor".
-        level (int, optional): Logging level. Defaults to logging.INFO.
+    def filter(self, record: logging.LogRecord) -> bool:
+        # List of noisy libraries to suppress
+        noisy_loggers = [
+            "transformers",
+            "unsloth",
+            "torch",
+            "accelerate",
+            "bitsandbytes",
+        ]
+        # Suppress external info/warnings, keep only critical errors
+        if any(lib in record.name for lib in noisy_loggers):
+            return record.levelno >= logging.ERROR
+        return True
 
-    Returns:
-        logging.Logger: Configured logger instance.
-    """
+
+def setup_logger(name: str = "ai_core", level: int = logging.INFO) -> logging.Logger:
+    """Configures and returns a logger instance."""
+
+    # Silence C++ level warnings from TensorFlow/XLA
+    os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
     logger = logging.getLogger(name)
     logger.setLevel(level)
 
-    # Prevent duplicate handlers
     if logger.hasHandlers():
         return logger
 
     handler = logging.StreamHandler(sys.stdout)
-
-    # Use simple human-readable formatter
     formatter = logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT)
     handler.setFormatter(formatter)
 
+    # Add the noise filter
+    handler.addFilter(ContextFilter())
+
     logger.addHandler(handler)
-    logger.propagate = False  # Prevent double logging in some environments
+    logger.propagate = False
+
+    # Force silence on root logger of external libs explicitly
+    logging.getLogger("transformers").setLevel(logging.ERROR)
+    logging.getLogger("unsloth").setLevel(logging.ERROR)
 
     return logger

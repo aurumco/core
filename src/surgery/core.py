@@ -129,6 +129,10 @@ class SubspaceExtractor:
             surgery_device = torch.device(f"cuda:{target_idx}")
 
         try:
+            # Only log for large layers to avoid clutter
+            if weight.numel() > 10000000:
+                logger.info(f"  -> Offloading SVD to {surgery_device}...")
+
             # Move weight to surgery device
             # We cast to float32 because SVD is generally more stable on float32
             # and CPU requires it anyway.
@@ -145,11 +149,9 @@ class SubspaceExtractor:
             del weight_for_svd
             torch.cuda.empty_cache()
 
-        except RuntimeError as e:
+        except RuntimeError:
             # Fallback to CPU if OOM even on second GPU
-            logger.warning(
-                f"GPU SVD failed on {surgery_device}: {e}. Falling back to CPU"
-            )
+            logger.warning(f"  -> GPU SVD failed on {surgery_device}. Fallback to CPU.")
             weight_cpu = weight.cpu().float()
             U, S, Vh = torch.linalg.svd(weight_cpu, full_matrices=False)
             device = weight.device
