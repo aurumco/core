@@ -89,7 +89,7 @@ class SubspaceExtractor:
         return True
 
     def _process_layer(self, layer: nn.Module) -> Dict[str, torch.Tensor]:
-        """Performs SVD and truncation on a single layer.
+        """Performs SVD and truncation on a single layer using optimal device.
 
         Complexity: O(min(m,n)^2 * max(m,n)) for SVD.
 
@@ -100,7 +100,6 @@ class SubspaceExtractor:
             Dict[str, torch.Tensor]: Dictionary containing U, S, V tensors.
         """
         # 1. Dequantize / Get Weights
-        # Use float16 (half) to save memory as requested.
         if isinstance(layer, Linear4bit):
             # bitsandbytes stores weights in .weight which is a Params4bit object.
             # We must use dequantize_4bit to get the actual float values.
@@ -116,23 +115,43 @@ class SubspaceExtractor:
         else:
             raise ValueError(f"Unsupported layer type: {type(layer)}")
 
-        # 2. SVD
-        # Clear cache before SVD to maximize available VRAM
+        # 2. SVD Strategy: Offload to Free GPU
         torch.cuda.empty_cache()
 
+        # Default to current device
+        surgery_device = weight.device
+
+        # If multiple GPUs, try to offload to the other one
+        if torch.cuda.device_count() > 1 and weight.device.type == "cuda":
+            current_idx = weight.device.index if weight.device.index is not None else 0
+            # Switch between 0 and 1 (assuming 2 GPUs context)
+            target_idx = 1 - current_idx
+            surgery_device = torch.device(f"cuda:{target_idx}")
+
         try:
-            # Perform SVD
-            # Note: svd on CUDA supports half, but on CPU it requires float32.
-            if weight.device.type == "cpu":
-                weight = weight.float()
-            U, S, Vh = torch.linalg.svd(weight, full_matrices=False)
-        except RuntimeError:
-            # Fallback to CPU if OOM
-            logger.warning("GPU SVD failed (likely OOM), falling back to CPU")
-            # Move to CPU for SVD and cast to float32 as CPU SVD doesn't support half
+            # Move weight to surgery device
+            # We cast to float32 because SVD is generally more stable on float32
+            # and CPU requires it anyway.
+            weight_for_svd = weight.to(surgery_device).float()
+
+            U, S, Vh = torch.linalg.svd(weight_for_svd, full_matrices=False)
+
+            # Move results back to original device (to clear surgery device VRAM)
+            U = U.to(weight.device)
+            S = S.to(weight.device)
+            Vh = Vh.to(weight.device)
+
+            # Cleanup surgery device
+            del weight_for_svd
+            torch.cuda.empty_cache()
+
+        except RuntimeError as e:
+            # Fallback to CPU if OOM even on second GPU
+            logger.warning(
+                f"GPU SVD failed on {surgery_device}: {e}. Falling back to CPU"
+            )
             weight_cpu = weight.cpu().float()
             U, S, Vh = torch.linalg.svd(weight_cpu, full_matrices=False)
-            # Move results back to original device
             device = weight.device
             U = U.to(device)
             S = S.to(device)
