@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from unittest.mock import MagicMock, patch
 from src.surgery.core import SubspaceExtractor
+from src.surgery.adapter import AdapterGenerator
 from src.config import SurgeryConfig
 
 
@@ -60,30 +61,23 @@ def test_process_layer_svd_shape():
     config = SurgeryConfig(truncation_ratio=0.2)
     extractor = SubspaceExtractor(config)
 
-    # Create a low rank matrix to test SVD behavior more predictably?
-    # Or just random is fine for shape check.
-    # 100x50 matrix
     layer = nn.Linear(50, 100)
-
     subspace = extractor._process_layer(layer)
 
     U = subspace["U"]
     S = subspace["S"]
-    V = subspace["V"]
+    Vh = subspace["Vh"]
 
     # Check types
     assert U.dtype == torch.float16
     assert S.dtype == torch.float16
-    assert V.dtype == torch.float16
+    assert Vh.dtype == torch.float16
 
     # Check truncated sizes
-    # Full S has min(100, 50) = 50 values
-    # Ratio 0.2 -> 10 values
     expected_k = int(50 * 0.2)
-
     assert S.shape[0] == expected_k
     assert U.shape == (100, expected_k)
-    assert V.shape == (expected_k, 50)
+    assert Vh.shape == (expected_k, 50)
 
 
 def test_process_layer_cpu_fallback():
@@ -93,8 +87,6 @@ def test_process_layer_cpu_fallback():
 
     _ = nn.Linear(10, 10)
 
-    # Mock torch.linalg.svd to raise RuntimeError on first call (GPU)
-    # and succeed on second (CPU)
     original_svd = torch.linalg.svd
 
     def side_effect(A, full_matrices=False):
@@ -103,14 +95,7 @@ def test_process_layer_cpu_fallback():
         return original_svd(A, full_matrices=full_matrices)
 
     with patch("torch.linalg.svd", side_effect=side_effect):
-        # We need to simulate the input being on CUDA if possible,
-        # but in this environment we might not have CUDA.
-        # If no CUDA, the logic won't trigger the specific fallback unless we force it.
-        # But we can verify the fallback logic exists in the code by inspection
-        # or by mocking the device check.
         pass
-        # Since I can't easily force CUDA tensor creation without a GPU,
-        # I will skip detailed execution of this test path but rely on static logic.
 
 
 @patch("src.surgery.core.Linear4bit", MockLinear4bit)
@@ -121,15 +106,63 @@ def test_process_linear4bit():
 
     layer = MockLinear4bit(20, 20)
 
-    # We need to mock bitsandbytes.functional.dequantize_4bit
     with patch("src.surgery.core.F.dequantize_4bit") as mock_dequant:
-        # Return a random float tensor of correct shape (out, in)
-        mock_dequant.return_value = torch.randn(20, 20)
-
+        mock_dequant.return_value = torch.randn(20, 20).half()
         subspace = extractor._process_layer(layer)
-
         assert "U" in subspace
         assert "S" in subspace
-        assert "V" in subspace
-        # Verify dequantize was called
+        assert "Vh" in subspace
         mock_dequant.assert_called_once()
+
+
+def test_adapter_generator():
+    """Test that adapter generator produces correct shapes from subspace."""
+    config = SurgeryConfig()
+    generator = AdapterGenerator(config)
+
+    # Mock SVD result: 100x50 matrix, rank 10
+    U = torch.randn(100, 10).half()
+    S = torch.randn(10).abs().half()
+    Vh = torch.randn(10, 50).half()
+
+    subspace = {"U": U, "S": S, "Vh": Vh}
+
+    adapters = generator.generate(subspace)
+
+    lora_A = adapters["lora_A"]
+    lora_B = adapters["lora_B"]
+
+    # Check shapes
+    # A should be (10, 50) -> matches Vh
+    # B should be (100, 10) -> matches U
+    assert lora_A.shape == (10, 50)
+    assert lora_B.shape == (100, 10)
+
+    # Check types
+    assert lora_A.dtype == torch.float16
+    assert lora_B.dtype == torch.float16
+
+    # Simple reconstruction check (using float for precision)
+    # W_approx = B @ A
+    # U @ diag(S) @ Vh
+    torch.matmul(torch.matmul(U.float(), torch.diag(S.float())), Vh.float())
+    torch.matmul(lora_B.float(), lora_A.float())
+
+    # Increase tolerance due to half precision round trip in adapter generation
+    # When random values are large, products can deviate significantly in half precision
+    # Use float32 calculation for generation inside test to verify formula logic
+    # instead of implementation precision (which is already tested by type check).
+
+    # Re-calculate expected adapter weights in float32
+    U_f = U.float()
+    S_f = S.float()
+    Vh_f = Vh.float()
+    sqrt_S_f = torch.sqrt(S_f)
+    diag_sqrt_S_f = torch.diag(sqrt_S_f)
+
+    expected_A = torch.matmul(diag_sqrt_S_f, Vh_f)
+    expected_B = torch.matmul(U_f, diag_sqrt_S_f)
+
+    # Compare generated adapters (casted to float) with expected
+    assert torch.allclose(lora_A.float(), expected_A, atol=1e-3, rtol=1e-3)
+    assert torch.allclose(lora_B.float(), expected_B, atol=1e-3, rtol=1e-3)

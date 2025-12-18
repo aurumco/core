@@ -3,8 +3,8 @@
 This module orchestrates the loading, surgery, and saving processes.
 """
 
-import shutil
 import sys
+import zipfile
 from pathlib import Path
 
 from src.config import AppConfig, ModelConfig, PathConfig, SurgeryConfig
@@ -25,7 +25,7 @@ def main() -> None:
         # In a real app, these might come from CLI args or env vars
         config = AppConfig(
             model=ModelConfig(
-                model_name="Qwen/Qwen1.5-7B-Chat-GPTQ-Int4",  # Example 4-bit model
+                model_name="unsloth/Qwen2.5-7B-Instruct-bnb-4bit",
                 device_map="auto",
                 quantization_bit=4,
             ),
@@ -62,58 +62,26 @@ def main() -> None:
         archive_path = config.paths.backup_dir
         archive_path.mkdir(parents=True, exist_ok=True)
 
-        # We want to zip the content of output_dir excluding backup_dir
-        # Since shutil.make_archive zips a root_dir, we need to be careful not to zip the zip itself if it's inside.
-        # Here we zip the entire output_dir structure.
-
-        # Create a temporary directory or zip carefully.
-        # Simpler approach: Zip the output directory content.
-        # But wait, config.paths.output_dir contains "backup" folder which we don't want to include recursively.
-        # We should zip specifically the 3 folders: base_model, extracted_subspace, adapters.
-
-        # However, making one archive of the parent `output_dir` is cleaner if we move backup outside or exclude it.
-        # Let's adjust: The backup goes to `output_dir/backup`.
-        # We will create a zip that contains the folders.
-
-        # Better approach: Create a temporary staging dir for the zip content
-        staging_dir = config.paths.output_dir / "staging_package"
-        if staging_dir.exists():
-            shutil.rmtree(staging_dir)
-        staging_dir.mkdir(parents=True)
-
-        # Move/Copy logic or just zip the directories we created
-        # Actually, `shutil.make_archive` with `root_dir` and `base_dir` is the way.
-        # We want the zip to contain:
-        # /base_model
-        # /extracted_subspace
-        # /adapters
-
-        # We can pass root_dir=config.paths.output_dir, but we need to exclude "backup".
-        # It's easier to zip the output_dir and ignore the fact that backup is inside initially,
-        # OR put backup outside of output_dir.
-        # But PathConfig defines backup_dir inside output_dir.
-
-        # Let's just iterate and zip the specific folders.
-        # OR use python zipfile module for control.
-        # For simplicity in this script, we'll use shutil but accept that we might need to structure it differently.
-        # Let's change backup_dir location in the archive step? No, PathConfig is fixed.
-
-        # We will use zipfile to create the archive manually to exclude "backup"
-        import zipfile
-
         zip_filename = archive_path / "subspace_extraction.zip"
+        target_folders = [
+            config.paths.base_model_dir,
+            config.paths.extraction_dir,
+            config.paths.adapters_dir,
+        ]
+
         with zipfile.ZipFile(zip_filename, "w", zipfile.ZIP_DEFLATED) as zf:
-            for folder in [
-                config.paths.base_model_dir,
-                config.paths.extraction_dir,
-                config.paths.adapters_dir,
-            ]:
+            for folder in target_folders:
                 if folder.exists():
+                    # Preserve structure: /base_model/config.json -> base_model/config.json
+                    # We walk relative to output_dir so base_model is at root of zip
                     for file in folder.rglob("*"):
                         if file.is_file():
-                            zf.write(
-                                file, arcname=file.relative_to(config.paths.output_dir)
-                            )
+                            # Ensure we don't zip the zip file itself if paths overlap (unlikely here)
+                            if file == zip_filename:
+                                continue
+
+                            arcname = file.relative_to(config.paths.output_dir)
+                            zf.write(file, arcname=arcname)
 
         logger.info(f"Artifacts compressed to {zip_filename}")
 
