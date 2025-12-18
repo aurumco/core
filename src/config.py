@@ -18,6 +18,7 @@ class ModelConfig:
         device_map (str): Device mapping strategy (e.g., "auto").
         quantization_bit (int): Quantization level (e.g., 4).
     """
+
     model_name: str
     device_map: str = "auto"
     quantization_bit: int = 4
@@ -32,6 +33,7 @@ class SurgeryConfig:
         target_modules (Optional[list[str]]): List of module names to target.
             If None, targets all Linear layers.
     """
+
     truncation_ratio: float = 0.2
     target_modules: Optional[list[str]] = None
 
@@ -45,6 +47,7 @@ class PathConfig:
         extraction_dir (Path): Directory for extracted subspace tensors.
         backup_dir (Path): Directory for backups/archives.
     """
+
     output_dir: Path
 
     @property
@@ -77,6 +80,7 @@ class AppConfig:
         surgery (SurgeryConfig): Surgery configuration.
         paths (PathConfig): Path configuration.
     """
+
     model: ModelConfig
     surgery: SurgeryConfig
     paths: PathConfig

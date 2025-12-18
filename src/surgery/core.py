@@ -7,7 +7,7 @@ on quantized model layers.
 from typing import Dict, Generator, Tuple
 import torch
 import torch.nn as nn
-from bitsandbytes.nn import Linear4bit
+from bitsandbytes.nn import Linear4bit  # type: ignore
 import bitsandbytes.functional as F
 from src.config import SurgeryConfig
 from src.utils.logging import setup_logger
@@ -30,7 +30,9 @@ class SubspaceExtractor:
         """
         self.config = config
 
-    def extract(self, model: nn.Module) -> Generator[Tuple[str, Dict[str, torch.Tensor]], None, None]:
+    def extract(
+        self, model: nn.Module
+    ) -> Generator[Tuple[str, Dict[str, torch.Tensor]], None, None]:
         """Iterates over model layers and yields extracted subspaces.
 
         Args:
@@ -96,7 +98,9 @@ class SubspaceExtractor:
             # bitsandbytes stores weights in .weight which is a Params4bit object.
             # We must use dequantize_4bit to get the actual float values.
             # layer.weight.quant_state holds the quantization parameters.
-            weight = F.dequantize_4bit(layer.weight.data, layer.weight.quant_state).float()
+            weight = F.dequantize_4bit(
+                layer.weight.data, layer.weight.quant_state  # type: ignore
+            ).float()
         elif isinstance(layer, nn.Linear):
             weight = layer.weight.data.float()
         else:
@@ -110,7 +114,7 @@ class SubspaceExtractor:
             # Perform SVD
             U, S, Vh = torch.linalg.svd(weight, full_matrices=False)
         except RuntimeError:
-             # Fallback to CPU if OOM
+            # Fallback to CPU if OOM
             logger.warning("GPU SVD failed (likely OOM), falling back to CPU")
             weight_cpu = weight.cpu()
             U, S, Vh = torch.linalg.svd(weight_cpu, full_matrices=False)
@@ -123,10 +127,10 @@ class SubspaceExtractor:
 
         U_k = U[:, :k]
         S_k = S[:k]
-        V_k = Vh[:k, :] # Vh is V transpose (usually denoted VT)
+        V_k = Vh[:k, :]  # Vh is V transpose (usually denoted VT)
 
         return {
-            "U": U_k.half(), # Store as half to save space
+            "U": U_k.half(),  # Store as half to save space
             "S": S_k.half(),
-            "V": V_k.half() # This is V^T actually, consistent with torch.linalg.svd output
+            "V": V_k.half(),  # This is V^T actually, consistent with torch.linalg.svd output
         }

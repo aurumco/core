@@ -8,7 +8,7 @@ import json
 import logging
 import sys
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 # Constants
 LOG_FORMAT = "%(message)s"
@@ -49,7 +49,9 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(log_obj)
 
 
-def setup_logger(name: str = "ai_core_extractor", level: int = logging.INFO) -> logging.Logger:
+def setup_logger(
+    name: str = "ai_core_extractor", level: int = logging.INFO
+) -> logging.Logger:
     """Configures and returns a logger instance.
 
     Args:

@@ -7,7 +7,4 @@ numpy>=1.26.0
 transformers>=4.36.0
 pytest>=7.4.0
 huggingface_hub>=0.20.0
-# For unsloth, it is recommended to install via:
-# pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
-# We include the package name here, but in practice, use the git URL.
 unsloth

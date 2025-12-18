@@ -6,7 +6,6 @@ This module orchestrates the loading, surgery, and saving processes.
 import shutil
 import sys
 from pathlib import Path
-from typing import Optional
 
 from src.config import AppConfig, ModelConfig, PathConfig, SurgeryConfig
 from src.surgery.core import SubspaceExtractor
@@ -26,16 +25,12 @@ def main() -> None:
         # In a real app, these might come from CLI args or env vars
         config = AppConfig(
             model=ModelConfig(
-                model_name="Qwen/Qwen1.5-7B-Chat-GPTQ-Int4", # Example 4-bit model
+                model_name="Qwen/Qwen1.5-7B-Chat-GPTQ-Int4",  # Example 4-bit model
                 device_map="auto",
-                quantization_bit=4
+                quantization_bit=4,
             ),
-            surgery=SurgeryConfig(
-                truncation_ratio=0.2
-            ),
-            paths=PathConfig(
-                output_dir=Path("output")
-            )
+            surgery=SurgeryConfig(truncation_ratio=0.2),
+            paths=PathConfig(output_dir=Path("output")),
         )
 
         logger.info("Starting AI Subspace Extraction Pipeline")
@@ -105,13 +100,20 @@ def main() -> None:
 
         # We will use zipfile to create the archive manually to exclude "backup"
         import zipfile
+
         zip_filename = archive_path / "subspace_extraction.zip"
-        with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for folder in [config.paths.base_model_dir, config.paths.extraction_dir, config.paths.adapters_dir]:
+        with zipfile.ZipFile(zip_filename, "w", zipfile.ZIP_DEFLATED) as zf:
+            for folder in [
+                config.paths.base_model_dir,
+                config.paths.extraction_dir,
+                config.paths.adapters_dir,
+            ]:
                 if folder.exists():
-                    for file in folder.rglob('*'):
+                    for file in folder.rglob("*"):
                         if file.is_file():
-                            zf.write(file, arcname=file.relative_to(config.paths.output_dir))
+                            zf.write(
+                                file, arcname=file.relative_to(config.paths.output_dir)
+                            )
 
         logger.info(f"Artifacts compressed to {zip_filename}")
 
@@ -136,7 +138,7 @@ def _upload_artifacts(file_path: Path) -> None:
     logger.info(f"Uploading {file_path} to remote storage...")
 
     try:
-        api = HfApi()
+        HfApi()
         # This assumes the user has already logged in via `huggingface-cli login`
         # or has HF_TOKEN env var set.
         # We upload to a private repo or a specific destination.
@@ -154,10 +156,12 @@ def _upload_artifacts(file_path: Path) -> None:
         #     repo_id="username/model-surgery-artifacts",
         #     repo_type="dataset"
         # )
-        logger.info("Ready to upload. Ensure HF_TOKEN is set and repo_id is configured.")
+        logger.info(
+            "Ready to upload. Ensure HF_TOKEN is set and repo_id is configured."
+        )
 
     except Exception as e:
-         logger.error(f"Upload failed: {e}")
+        logger.error(f"Upload failed: {e}")
 
     logger.info("Upload process finished.")
 

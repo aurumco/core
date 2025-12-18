@@ -3,8 +3,7 @@
 This module handles saving the extracted subspaces to disk using SafeTensors.
 """
 
-from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
 import torch
 from safetensors.torch import save_file
 from src.config import PathConfig
@@ -28,7 +27,9 @@ class ModelSerializer:
         """
         self.config = config
 
-    def save_layer_subspace(self, layer_name: str, subspace: Dict[str, torch.Tensor]) -> None:
+    def save_layer_subspace(
+        self, layer_name: str, subspace: Dict[str, torch.Tensor]
+    ) -> None:
         """Saves the extracted subspace for a single layer.
 
         Args:

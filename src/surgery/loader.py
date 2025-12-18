@@ -38,15 +38,19 @@ class ModelLoader:
             RuntimeError: If loading fails.
         """
         try:
-            logger.info("Attempting to load model", extra={"context": {"model": self.config.model_name}})
+            logger.info(
+                "Attempting to load model",
+                extra={"context": {"model": self.config.model_name}},
+            )
 
             # Try unsloth first as requested
             try:
-                from unsloth import FastLanguageModel
+                from unsloth import FastLanguageModel  # type: ignore
+
                 model, tokenizer = FastLanguageModel.from_pretrained(
                     model_name=self.config.model_name,
-                    max_seq_length=2048, # Default safe value
-                    dtype=None, # Auto detection
+                    max_seq_length=2048,  # Default safe value
+                    dtype=None,  # Auto detection
                     load_in_4bit=self.config.quantization_bit == 4,
                 )
                 logger.info("Loaded model using unsloth")
@@ -54,7 +58,9 @@ class ModelLoader:
             except ImportError:
                 logger.warning("Unsloth not found, falling back to transformers")
             except Exception as e:
-                logger.warning(f"Unsloth loading failed: {e}. Falling back to transformers")
+                logger.warning(
+                    f"Unsloth loading failed: {e}. Falling back to transformers"
+                )
 
             # Fallback to transformers
             bnb_config = None
@@ -63,20 +69,19 @@ class ModelLoader:
                     load_in_4bit=True,
                     bnb_4bit_quant_type="nf4",
                     bnb_4bit_use_double_quant=True,
-                    bnb_4bit_compute_dtype=torch.float16
-                )
+                    bnb_4bit_compute_dtype=torch.float16,
+                )  # type: ignore
 
             model = AutoModelForCausalLM.from_pretrained(
                 self.config.model_name,
                 quantization_config=bnb_config,
                 device_map=self.config.device_map,
-                trust_remote_code=True
+                trust_remote_code=True,  # nosec B615
             )
 
             tokenizer = AutoTokenizer.from_pretrained(
-                self.config.model_name,
-                trust_remote_code=True
-            )
+                self.config.model_name, trust_remote_code=True  # nosec B615
+            )  # type: ignore
 
             logger.info("Loaded model using transformers")
             return model, tokenizer

@@ -1,14 +1,15 @@
 """Tests for the surgery module."""
 
-import pytest
 import torch
 import torch.nn as nn
 from unittest.mock import MagicMock, patch
 from src.surgery.core import SubspaceExtractor
 from src.config import SurgeryConfig
 
+
 class MockLinear4bit(nn.Module):
     """Mock for bitsandbytes Linear4bit."""
+
     def __init__(self, in_features, out_features):
         super().__init__()
         self.in_features = in_features
@@ -18,13 +19,17 @@ class MockLinear4bit(nn.Module):
         # Mock quant_state
         self.weight.quant_state = MagicMock()
         # Mock data as some tensor
-        self.weight.data = torch.randint(0, 255, (out_features, in_features // 2), dtype=torch.uint8)
+        self.weight.data = torch.randint(
+            0, 255, (out_features, in_features // 2), dtype=torch.uint8
+        )
+
 
 def test_extractor_initialization():
     """Test that extractor initializes with config."""
     config = SurgeryConfig(truncation_ratio=0.5)
     extractor = SubspaceExtractor(config)
     assert extractor.config.truncation_ratio == 0.5
+
 
 def test_should_process_linear_layer():
     """Test filtering of layers."""
@@ -37,6 +42,7 @@ def test_should_process_linear_layer():
     assert extractor._should_process("layer.linear", linear) is True
     assert extractor._should_process("layer.conv", conv) is False
 
+
 def test_should_process_target_modules():
     """Test filtering with target modules."""
     config = SurgeryConfig(target_modules=["attention"])
@@ -47,6 +53,7 @@ def test_should_process_target_modules():
 
     assert extractor._should_process("layers.0.attention.query", linear_attn) is True
     assert extractor._should_process("layers.0.mlp.gate", linear_mlp) is False
+
 
 def test_process_layer_svd_shape():
     """Test SVD and truncation shapes."""
@@ -78,23 +85,24 @@ def test_process_layer_svd_shape():
     assert U.shape == (100, expected_k)
     assert V.shape == (expected_k, 50)
 
+
 def test_process_layer_cpu_fallback():
     """Test fallback when GPU SVD fails."""
     config = SurgeryConfig()
-    extractor = SubspaceExtractor(config)
+    _ = SubspaceExtractor(config)
 
-    layer = nn.Linear(10, 10)
+    _ = nn.Linear(10, 10)
 
     # Mock torch.linalg.svd to raise RuntimeError on first call (GPU)
     # and succeed on second (CPU)
     original_svd = torch.linalg.svd
 
     def side_effect(A, full_matrices=False):
-        if A.device.type == 'cuda':
+        if A.device.type == "cuda":
             raise RuntimeError("CUDA error: out of memory")
         return original_svd(A, full_matrices=full_matrices)
 
-    with patch('torch.linalg.svd', side_effect=side_effect) as mock_svd:
+    with patch("torch.linalg.svd", side_effect=side_effect):
         # We need to simulate the input being on CUDA if possible,
         # but in this environment we might not have CUDA.
         # If no CUDA, the logic won't trigger the specific fallback unless we force it.
@@ -104,7 +112,8 @@ def test_process_layer_cpu_fallback():
         # Since I can't easily force CUDA tensor creation without a GPU,
         # I will skip detailed execution of this test path but rely on static logic.
 
-@patch('src.surgery.core.Linear4bit', MockLinear4bit)
+
+@patch("src.surgery.core.Linear4bit", MockLinear4bit)
 def test_process_linear4bit():
     """Test processing of Linear4bit layers."""
     config = SurgeryConfig(truncation_ratio=0.5)
@@ -113,7 +122,7 @@ def test_process_linear4bit():
     layer = MockLinear4bit(20, 20)
 
     # We need to mock bitsandbytes.functional.dequantize_4bit
-    with patch('src.surgery.core.F.dequantize_4bit') as mock_dequant:
+    with patch("src.surgery.core.F.dequantize_4bit") as mock_dequant:
         # Return a random float tensor of correct shape (out, in)
         mock_dequant.return_value = torch.randn(20, 20)
 
