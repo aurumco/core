@@ -29,12 +29,12 @@ class SurgeryConfig:
     """Configuration for the surgery/extraction process.
 
     Args:
-        truncation_ratio (float): Ratio of singular values to retain (0.0 to 1.0).
+        energy_threshold (float): Energy threshold for dynamic truncation (e.g., 0.99).
         target_modules (Optional[list[str]]): List of module names to target.
             If None, targets all Linear layers.
     """
 
-    truncation_ratio: float = 0.2
+    energy_threshold: float = 0.99
     target_modules: Optional[list[str]] = None
 
 
@@ -44,26 +44,34 @@ class PathConfig:
 
     Args:
         output_dir (Path): Root directory for outputs.
-        extraction_dir (Path): Directory for extracted subspace tensors.
-        backup_dir (Path): Directory for backups/archives.
     """
 
     output_dir: Path
 
     @property
-    def base_model_dir(self) -> Path:
-        """Returns the directory for base model configuration."""
-        return self.output_dir / "base_model"
+    def model_4bit_dir(self) -> Path:
+        """Returns the directory for final 4-bit model."""
+        return self.output_dir / "model_4bit"
 
     @property
     def extraction_dir(self) -> Path:
-        """Returns the directory for extracted tensors."""
+        """Returns the directory for extracted tensors (legacy support)."""
         return self.output_dir / "extracted_subspace"
 
     @property
     def adapters_dir(self) -> Path:
-        """Returns the directory for adapter configurations."""
+        """Returns the directory for adapter configurations (legacy support)."""
         return self.output_dir / "adapters"
+
+    @property
+    def analytics_dir(self) -> Path:
+        """Returns the directory for analytics reports."""
+        return self.output_dir / "analytics"
+
+    @property
+    def metadata_dir(self) -> Path:
+        """Returns the directory for surgery metadata."""
+        return self.output_dir / "metadata"
 
     @property
     def backup_dir(self) -> Path:
