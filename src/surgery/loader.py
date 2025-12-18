@@ -51,7 +51,7 @@ class ModelLoader:
 
             # Try unsloth first as requested
             try:
-                from unsloth import FastLanguageModel  # type: ignore
+                from unsloth import FastLanguageModel
 
                 model, tokenizer = FastLanguageModel.from_pretrained(
                     model_name=self.config.model_name,
