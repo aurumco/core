@@ -25,7 +25,7 @@ def main() -> None:
         # In a real app, these might come from CLI args or env vars
         config = AppConfig(
             model=ModelConfig(
-                model_name="unsloth/Qwen2.5-7B-Instruct-bnb-4bit",
+                model_name="unsloth/Qwen3-8B-unsloth-bnb-4bit",
                 device_map="auto",
                 quantization_bit=4,
             ),
