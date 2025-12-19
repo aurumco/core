@@ -84,8 +84,7 @@ class AnalyticsEngine:
         layer_names = [m["layer_name"] for m in metadata_list]
         ranks = [m["rank"] for m in metadata_list]
 
-        # Abbreviate names for X-axis
-        short_names = [n.split(".")[-2] + "." + n.split(".")[-1] for n in layer_names]
+        short_names = [n if "." not in n else ".".join(n.split(".")[-2:]) for n in layer_names]
 
         plt.figure(figsize=(15, 8))
         plt.bar(short_names, ranks)
