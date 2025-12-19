@@ -54,16 +54,11 @@ class ConsoleUI:
         fill: str = "█",
     ) -> object:
         """Simple ASCII progress bar generator."""
-        # Check if we are in a TTY
-        is_tty = sys.stdout.isatty()
+        # Force TTY behavior if desired, but relying on is_tty is safer.
+        # However, to ensure minimal updates without newlines in notebooks/consoles:
+        # We don't need to assign is_tty if we are always assuming it for this bar.
 
         def print_bar(iteration: int, suffix: str = "") -> None:
-            if not is_tty:
-                # Log periodically if not interactive
-                if iteration % max(1, total // 10) == 0:
-                    print(f"[{iteration}/{total}] {prefix} {suffix}")
-                return
-
             percent = ("{0:.1f}").format(100 * (iteration / float(total)))
             filled_length = int(length * iteration // total)
             bar = fill * filled_length + "-" * (length - filled_length)
@@ -77,8 +72,7 @@ class ConsoleUI:
             yield item
             print_bar(i + 1)
 
-        if is_tty:
-            print()  # Newline on complete
+        print()  # Newline on complete
 
     @staticmethod
     def status_update(message: str) -> None:

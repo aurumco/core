@@ -4,6 +4,8 @@ This module orchestrates the loading, surgery, and saving processes.
 """
 
 import json
+import os
+import gc
 import sys
 import zipfile
 from pathlib import Path
@@ -11,6 +13,9 @@ from typing import Dict, Any, List
 
 from safetensors.torch import load_file, save_file
 import torch
+
+# 1. Environment Setup (Prevent Fragmentation)
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 from src.analytics.engine import AnalyticsEngine
 from src.config import AppConfig, ModelConfig, PathConfig, SurgeryConfig
@@ -32,7 +37,7 @@ def main() -> None:
         config = AppConfig(
             model=ModelConfig(
                 model_name="Qwen/Qwen3-8B",  # Changed to 16-bit Qwen3
-                device_map="auto",
+                device_map="cpu",  # Load on CPU to save VRAM for SVD
                 quantization_bit=16,  # bfloat16
             ),
             surgery=SurgeryConfig(energy_threshold=0.99),
@@ -104,6 +109,10 @@ def main() -> None:
 
         # 6. Unsloth Quantization & Export
         ConsoleUI.status_update("Quantizing & Exporting (Safetensors/GGUF)...")
+
+        # Cleanup before export
+        gc.collect()
+        torch.cuda.empty_cache()
 
         # Create output dir
         config.paths.model_4bit_dir.mkdir(parents=True, exist_ok=True)

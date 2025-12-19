@@ -54,11 +54,13 @@ class ModelLoader:
                 from unsloth import FastLanguageModel
 
                 # We load in 16-bit (bfloat16) as requested for "Genetic Engineering"
+                # Pass device_map if supported (Unsloth generally expects GPU, but we pass config)
                 model, tokenizer = FastLanguageModel.from_pretrained(
                     model_name=self.config.model_name,
                     max_seq_length=2048,
                     dtype=torch.bfloat16,
                     load_in_4bit=False,
+                    device_map=self.config.device_map,
                 )
                 logger.info("Loaded model using unsloth (bfloat16)")
                 return model, tokenizer
