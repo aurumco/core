@@ -44,7 +44,7 @@ def check_system_resources() -> None:
     # Estimate requirements:
     # 4B model FP16 dump ~= 8GB
     # GGUF Final ~= 3GB
-    # Safetensors ~= 8GB (if full model) or less if compressed (but we save full for now)
+    # Safetensors ~= 8GB (if full model)
     # Total margin needed: ~12GB in /tmp (for conversion) + ~10GB in Working (for outputs)
 
     if tmp_free_gb < 12:
@@ -56,7 +56,6 @@ def check_system_resources() -> None:
         logger.warning(
             f"Low disk space in working dir ({work_free_gb:.1f}GB). Saving outputs might fail."
         )
-        # We don't exit, but we warn loudly.
         print("\n[WARNING] Low disk space detected! Pipeline might fail at export stage.\n")
 
 
@@ -167,6 +166,13 @@ def main() -> None:
 
             with tempfile.TemporaryDirectory(dir="/tmp") as temp_gguf_dir:
                 logger.debug(f"Temporary GGUF staging: {temp_gguf_dir}")
+
+                # BUGFIX: Explicitly save config and tokenizer to temp dir first.
+                # Unsloth's save_pretrained_gguf can sometimes fail to find config.json
+                # if the initial save step hiccups or if looking for existing config.
+                # Pre-saving ensures it exists.
+                model.config.save_pretrained(temp_gguf_dir)
+                tokenizer.save_pretrained(temp_gguf_dir)
 
                 if hasattr(model, "save_pretrained_gguf"):
                     # Save GGUF to temp dir
