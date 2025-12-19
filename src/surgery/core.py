@@ -5,6 +5,7 @@ on quantized model layers.
 """
 
 from typing import Dict, Generator, Tuple, Any
+import gc
 import torch
 import torch.nn as nn
 from bitsandbytes.nn import Linear4bit  # type: ignore
@@ -111,8 +112,6 @@ class SubspaceExtractor:
             Dict[str, Any]: Contains "U", "S", "Vh", "rank", "energy_preserved".
         """
         # 1. Get Weights (Always cast to float32 for SVD stability)
-        # Note: If layer is Linear4bit, we dequantize. If it's already bf16/fp16, we cast.
-
         if hasattr(layer, "weight"):
             # Check if it's 4-bit (shouldn't be in this new pipeline but good to handle)
             if isinstance(layer, Linear4bit):
@@ -124,90 +123,126 @@ class SubspaceExtractor:
         else:
             raise ValueError(f"Unsupported layer type: {type(layer)}")
 
-        # 2. SVD Strategy: Offload to Free GPU
+        # 2. SVD Strategy: Offload to Surgery GPU (e.g., cuda:1)
         torch.cuda.empty_cache()
-        surgery_device = weight.device
 
-        # Ping-Pong Strategy
-        if torch.cuda.device_count() > 1 and weight.device.type == "cuda":
-            current_idx = weight.device.index if weight.device.index is not None else 0
-            target_idx = 1 - current_idx
-            surgery_device = torch.device(f"cuda:{target_idx}")
+        # Determine target device for SVD (prefer cuda:1 if available, else cuda:0)
+        # Assuming we loaded model on CPU as requested to save VRAM.
+        if torch.cuda.device_count() > 1:
+            surgery_device = torch.device("cuda:1")
+        elif torch.cuda.is_available():
+            surgery_device = torch.device("cuda:0")
+        else:
+            surgery_device = torch.device("cpu")
 
         try:
             if weight.numel() > 10000000:
-                logger.info(f"  -> Offloading SVD to {surgery_device}...")
+                logger.debug(f"  -> Offloading SVD to {surgery_device}...")
 
+            # Move weight to surgery device for SVD
             weight_for_svd = weight.to(surgery_device)
             U, S, Vh = torch.linalg.svd(weight_for_svd, full_matrices=False)
 
-            # Move results back
-            U = U.to(weight.device)
-            S = S.to(weight.device)
-            Vh = Vh.to(weight.device)
+            # 3. Dynamic Truncation on Surgery Device
+            # E = sum(sigma^2)
+            S_squared = S**2
+            total_energy = torch.sum(S_squared)
+            cumulative_energy = torch.cumsum(S_squared, dim=0)
 
-            del weight_for_svd
+            # Find k where cumulative energy >= threshold * total
+            threshold_energy = self.config.energy_threshold * total_energy
+            k_val = torch.searchsorted(cumulative_energy, threshold_energy).item()
+            k = int(k_val) + 1
+            k = max(1, min(k, len(S)))
+
+            # Truncate
+            U_k = U[:, :k]
+            S_k = S[:k]
+            Vh_k = Vh[:k, :]
+
+            # Reconstruct approximation on Surgery Device
+            W_approx = torch.matmul(U_k, torch.matmul(torch.diag(S_k), Vh_k))
+
+            # Move results to CPU immediately to free VRAM
+            # As per strict instruction: contiguous() on GPU, then move to CPU
+            U_cpu = U_k.contiguous().cpu()
+            S_cpu = S_k.contiguous().cpu()
+            Vh_cpu = Vh_k.contiguous().cpu()
+            W_approx_cpu = W_approx.cpu()
+
+            energy_preserved = float((cumulative_energy[k - 1] / total_energy).item())
+            original_size = weight.numel()
+            compressed_size = U_k.numel() + S_k.numel() + Vh_k.numel()
+
+            # Cleanup VRAM immediately
+            del (
+                weight_for_svd,
+                U,
+                S,
+                Vh,
+                U_k,
+                S_k,
+                Vh_k,
+                W_approx,
+                cumulative_energy,
+                S_squared,
+            )
             torch.cuda.empty_cache()
 
-        except RuntimeError:
-            logger.warning("  -> GPU SVD failed. Fallback to CPU.")
+        except RuntimeError as e:
+            logger.warning(f"  -> GPU SVD failed: {e}. Fallback to CPU.")
+            # Fallback
             weight_cpu = weight.cpu()
             U, S, Vh = torch.linalg.svd(weight_cpu, full_matrices=False)
-            device = weight.device
-            U = U.to(device)
-            S = S.to(device)
-            Vh = Vh.to(device)
 
-        # 3. Dynamic Truncation (Energy Threshold)
-        # E = sum(sigma^2)
-        S_squared = S**2
-        total_energy = torch.sum(S_squared)
-        cumulative_energy = torch.cumsum(S_squared, dim=0)
+            # Truncation Logic (Duplicated for fallback - could be refactored)
+            S_squared = S**2
+            total_energy = torch.sum(S_squared)
+            cumulative_energy = torch.cumsum(S_squared, dim=0)
+            threshold_energy = self.config.energy_threshold * total_energy
+            k_val = torch.searchsorted(cumulative_energy, threshold_energy).item()
+            k = int(k_val) + 1
+            k = max(1, min(k, len(S)))
 
-        # Find k where cumulative energy >= threshold * total
-        threshold_energy = self.config.energy_threshold * total_energy
-        # torch.searchsorted requires sorted sequence. cumulative is sorted ascending.
-        k_val = torch.searchsorted(cumulative_energy, threshold_energy).item()
-        # Ensure k is int and 1-based index
-        k = int(k_val) + 1
+            U_k = U[:, :k]
+            S_k = S[:k]
+            Vh_k = Vh[:k, :]
+            W_approx_cpu = torch.matmul(U_k, torch.matmul(torch.diag(S_k), Vh_k))
 
-        # Safety bounds
-        k = max(1, min(k, len(S)))
+            U_cpu = U_k.contiguous()
+            S_cpu = S_k.contiguous()
+            Vh_cpu = Vh_k.contiguous()
 
-        # Reconstruct Weight W' = U_k * S_k * Vh_k
-        U_k = U[:, :k]
-        S_k = S[:k]
-        Vh_k = Vh[:k, :]
-
-        # Reconstruct approximation
-        W_approx = torch.matmul(U_k, torch.matmul(torch.diag(S_k), Vh_k))
+            energy_preserved = float((cumulative_energy[k - 1] / total_energy).item())
+            original_size = weight.numel()
+            compressed_size = U_k.numel() + S_k.numel() + Vh_k.numel()
 
         # 4. In-Place Update of Model Weights
-        # We replace the layer's weight with the approximated weight.
-        # This prepares the model for QAT/Quantization.
-        # Convert back to original dtype (likely bf16 or fp16)
-        # Type ignore: we assume these properties exist on the layer.weight
+        # Determine original dtype
         original_dtype = (
             layer.weight.dtype if not isinstance(layer, Linear4bit) else torch.bfloat16
-        )  # Assumption
+        )
+
+        # Convert W_approx to target dtype (bf16/fp16) on CPU
+        W_new = W_approx_cpu.to(dtype=original_dtype)
 
         if isinstance(layer, nn.Linear):
-            # Explicit cast to dtype required by mypy
-            # Cast original_dtype to torch.dtype just to be safe for mypy if it inferred Union
-            layer.weight.data = W_approx.to(dtype=original_dtype)  # type: ignore
+            # Assign to layer on CPU (since device_map="cpu")
+            layer.weight.data = W_new  # type: ignore
         else:
-            # If complex layer (Unsloth), try assigning to .weight.data
-            # Be precise with arguments for to()
-            target_device = layer.weight.device
-            target_dtype = layer.weight.dtype
-            layer.weight.data = W_approx.to(device=target_device, dtype=target_dtype)  # type: ignore
+            # For Unsloth/custom layers
+            layer.weight.data = W_new  # type: ignore
+
+        # Aggressive Cleanup
+        del weight, W_approx_cpu, W_new
+        gc.collect()
 
         return {
-            "U": U_k.contiguous(),  # Keep if we want to save subspace
-            "S": S_k.contiguous(),
-            "Vh": Vh_k.contiguous(),
+            "U": U_cpu,
+            "S": S_cpu,
+            "Vh": Vh_cpu,
             "rank": k,
-            "energy_preserved": float((cumulative_energy[k - 1] / total_energy).item()),
-            "original_size": weight.numel(),
-            "compressed_size": U_k.numel() + S_k.numel() + Vh_k.numel(),
+            "energy_preserved": energy_preserved,
+            "original_size": original_size,
+            "compressed_size": compressed_size,
         }
