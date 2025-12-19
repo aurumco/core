@@ -7,7 +7,9 @@ import json
 import os
 import gc
 import sys
+import shutil
 import zipfile
+import tempfile
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -26,9 +28,44 @@ from src.utils.ui import ConsoleUI
 logger = setup_logger(__name__)
 
 
+def check_system_resources() -> None:
+    """Checks for sufficient disk space and resources before starting."""
+    # Check disk space
+    work_usage = shutil.disk_usage(".")
+    tmp_usage = shutil.disk_usage("/tmp")
+
+    work_free_gb = work_usage.free / (1024**3)
+    tmp_free_gb = tmp_usage.free / (1024**3)
+
+    ConsoleUI.status_update(
+        f"Disk Space: Working={work_free_gb:.1f}GB, /tmp={tmp_free_gb:.1f}GB"
+    )
+
+    # Estimate requirements:
+    # 4B model FP16 dump ~= 8GB
+    # GGUF Final ~= 3GB
+    # Safetensors ~= 8GB (if full model) or less if compressed (but we save full for now)
+    # Total margin needed: ~12GB in /tmp (for conversion) + ~10GB in Working (for outputs)
+
+    if tmp_free_gb < 12:
+        logger.warning(
+            f"Low disk space in /tmp ({tmp_free_gb:.1f}GB). GGUF conversion might fail."
+        )
+
+    if work_free_gb < 10:
+        logger.warning(
+            f"Low disk space in working dir ({work_free_gb:.1f}GB). Saving outputs might fail."
+        )
+        # We don't exit, but we warn loudly.
+        print("\n[WARNING] Low disk space detected! Pipeline might fail at export stage.\n")
+
+
 def main() -> None:
     """Executes the main pipeline."""
     try:
+        # 0. Pre-flight Checks
+        check_system_resources()
+
         # 1. Configuration
         config = AppConfig(
             model=ModelConfig(
@@ -91,10 +128,6 @@ def main() -> None:
             metadata_list.append(meta)
 
             # NOTE: SubspaceExtractor now updates the model weights IN-PLACE.
-            # We do not generate adapters here because SVD compression is a replacement,
-            # not an addition. The modified model (now low-rank) is resident in memory
-            # (re-quantized to 4-bit).
-
             logger.debug(f"Processed {lname}")
 
         print("\n")
@@ -120,29 +153,47 @@ def main() -> None:
 
         try:
             # 1. Save Safetensors (Modified Full Model)
-            # We save the in-place modified model as safetensors first.
-            # This satisfies the requirement for "two main formats".
             safetensors_path = config.paths.model_4bit_dir / "safetensors"
             logger.info("Saving Safetensors format...")
             model.save_pretrained(safetensors_path)
             tokenizer.save_pretrained(safetensors_path)
             logger.info(f"Safetensors saved to {safetensors_path}")
 
-            # 2. GGUF Export (Native Unsloth)
-            # The model already contains the SVD-compressed weights (in-place).
-            # save_pretrained_gguf will handle saving this modified state.
+            # 2. GGUF Export (Native Unsloth) - Optimized for Kaggle Disk Limits
+            # We use a temporary directory in /tmp for the intermediate conversion steps
+            # to avoid filling up the working directory (20GB limit).
 
-            if hasattr(model, "save_pretrained_gguf"):
-                gguf_path = config.paths.model_4bit_dir / "gguf"
-                model.save_pretrained_gguf(
-                    str(gguf_path),
-                    tokenizer,
-                    quantization_method="q4_k_m",
-                )
-                logger.info(f"GGUF saved to {gguf_path}")
-            else:
-                logger.error("Unsloth GGUF export method not found on model.")
-                raise RuntimeError("save_pretrained_gguf missing")
+            logger.info("Starting GGUF conversion (using /tmp for intermediate storage)...")
+
+            with tempfile.TemporaryDirectory(dir="/tmp") as temp_gguf_dir:
+                logger.debug(f"Temporary GGUF staging: {temp_gguf_dir}")
+
+                if hasattr(model, "save_pretrained_gguf"):
+                    # Save GGUF to temp dir
+                    model.save_pretrained_gguf(
+                        temp_gguf_dir,
+                        tokenizer,
+                        quantization_method="q4_k_m",
+                    )
+
+                    # Move the result to the final output directory
+                    final_gguf_dir = config.paths.model_4bit_dir / "gguf"
+                    final_gguf_dir.mkdir(parents=True, exist_ok=True)
+
+                    # Find generated GGUF files
+                    temp_path = Path(temp_gguf_dir)
+                    found_files = list(temp_path.glob("*.gguf"))
+
+                    if not found_files:
+                        raise RuntimeError("No GGUF files found after conversion!")
+
+                    for file in found_files:
+                        shutil.move(str(file), str(final_gguf_dir / file.name))
+                        logger.info(f"Moved {file.name} to {final_gguf_dir}")
+
+                else:
+                    logger.error("Unsloth GGUF export method not found on model.")
+                    raise RuntimeError("save_pretrained_gguf missing")
 
         except Exception as e:
             logger.error(f"Export failed: {e}")
