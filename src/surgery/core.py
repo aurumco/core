@@ -68,11 +68,6 @@ class SubspaceExtractor:
 
             except Exception as e:
                 logger.error(f"Failed to process layer {name}: {e}", exc_info=True)
-                # Continue to next layer instead of crashing entire pipeline?
-                # Constitution says "Silence is unacceptable", raising is better
-                # but for a long process, logging error and moving on might be preferred
-                # if possible. However, Article V says "Actionable".
-                # We will re-raise to ensure integrity.
                 raise
 
     def _should_process(self, name: str, module: nn.Module) -> bool:
@@ -113,7 +108,7 @@ class SubspaceExtractor:
         """
         # 1. Get Weights (Always cast to float32 for SVD stability)
         if hasattr(layer, "weight"):
-            # Check if it's 4-bit (shouldn't be in this new pipeline but good to handle)
+            # Check if it's 4-bit
             if isinstance(layer, Linear4bit):
                 weight = F.dequantize_4bit(
                     layer.weight.data, layer.weight.quant_state  # type: ignore
@@ -127,7 +122,6 @@ class SubspaceExtractor:
         torch.cuda.empty_cache()
 
         # Determine target device for SVD (prefer cuda:1 if available, else cuda:0)
-        # Assuming we loaded model on CPU as requested to save VRAM.
         if torch.cuda.device_count() > 1:
             surgery_device = torch.device("cuda:1")
         elif torch.cuda.is_available():
@@ -160,15 +154,15 @@ class SubspaceExtractor:
             S_k = S[:k]
             Vh_k = Vh[:k, :]
 
-            # Reconstruct approximation on Surgery Device
+            # Reconstruct approximation
+            # W_approx = U_k @ diag(S_k) @ Vh_k
             W_approx = torch.matmul(U_k, torch.matmul(torch.diag(S_k), Vh_k))
 
-            # Move results to CPU immediately to free VRAM
-            # As per strict instruction: contiguous() on GPU, then move to CPU
+            # Move results to CPU
             U_cpu = U_k.contiguous().cpu()
             S_cpu = S_k.contiguous().cpu()
             Vh_cpu = Vh_k.contiguous().cpu()
-            W_approx_cpu = W_approx.cpu()
+            W_approx_cpu = W_approx.cpu()  # Keep on CPU for assignment/quantization
 
             energy_preserved = float((cumulative_energy[k - 1] / total_energy).item())
             original_size = weight.numel()
@@ -195,7 +189,7 @@ class SubspaceExtractor:
             weight_cpu = weight.cpu()
             U, S, Vh = torch.linalg.svd(weight_cpu, full_matrices=False)
 
-            # Truncation Logic (Duplicated for fallback - could be refactored)
+            # Truncation Logic
             S_squared = S**2
             total_energy = torch.sum(S_squared)
             cumulative_energy = torch.cumsum(S_squared, dim=0)
@@ -207,6 +201,7 @@ class SubspaceExtractor:
             U_k = U[:, :k]
             S_k = S[:k]
             Vh_k = Vh[:k, :]
+
             W_approx_cpu = torch.matmul(U_k, torch.matmul(torch.diag(S_k), Vh_k))
 
             U_cpu = U_k.contiguous()
@@ -217,21 +212,44 @@ class SubspaceExtractor:
             original_size = weight.numel()
             compressed_size = U_k.numel() + S_k.numel() + Vh_k.numel()
 
-        # 4. In-Place Update of Model Weights
+        # 4. In-Place Update of Model Weights (The "Surgery")
+        # We replace the original high-rank weights with the low-rank approximation.
+        # This is mathematically correct for compression: W <- W_approx
+
         # Determine original dtype
-        original_dtype = (
-            layer.weight.dtype if not isinstance(layer, Linear4bit) else torch.bfloat16
-        )
+        original_dtype = torch.bfloat16 if isinstance(layer, Linear4bit) else layer.weight.dtype
 
-        # Convert W_approx to target dtype (bf16/fp16) on CPU
-        W_new = W_approx_cpu.to(dtype=original_dtype)
+        # Convert W_approx to target dtype
+        W_new = W_approx_cpu.to(dtype=original_dtype)  # type: ignore
 
-        if isinstance(layer, nn.Linear):
-            # Assign to layer on CPU (since device_map="cpu")
+        if isinstance(layer, Linear4bit):
+            # For 4-bit layers, we must re-quantize the new approximated weights
+            # to maintain the 4-bit structure and memory benefits.
+            # Using nf4 as it's standard for Qwen/Unsloth
+
+            # Ensure input is on same device as layer for quantization if needed,
+            # or CPU if bitsandbytes supports it.
+            # Ideally we quantize on GPU if possible for speed, but CPU saves VRAM.
+            # W_new is on CPU.
+
+            W_new_cuda = W_new.to(layer.weight.device)
+            q_weight, q_state = F.quantize_4bit(
+                W_new_cuda, quant_type="nf4", compress_statistics=True
+            )
+
+            # Update the layer in-place
+            layer.weight.data = q_weight
+            layer.weight.quant_state = q_state  # type: ignore
+
+            # Cleanup
+            del W_new_cuda
+
+        elif isinstance(layer, nn.Linear):
+            # Standard assignment
             layer.weight.data = W_new  # type: ignore
         else:
-            # For Unsloth/custom layers
-            layer.weight.data = W_new  # type: ignore
+             # Fallback
+            layer.weight.data = W_new # type: ignore
 
         # Aggressive Cleanup
         del weight, W_approx_cpu, W_new
