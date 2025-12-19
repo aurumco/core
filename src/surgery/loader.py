@@ -53,16 +53,15 @@ class ModelLoader:
             try:
                 from unsloth import FastLanguageModel
 
-                # We load in 16-bit (bfloat16) as requested for "Genetic Engineering"
-                # Pass device_map if supported (Unsloth generally expects GPU, but we pass config)
+                # Use load_in_4bit=True as requested for memory efficiency
                 model, tokenizer = FastLanguageModel.from_pretrained(
                     model_name=self.config.model_name,
-                    max_seq_length=2048,
-                    dtype=torch.bfloat16,
-                    load_in_4bit=False,
+                    max_seq_length=4096,
+                    dtype=None,  # Auto detection
+                    load_in_4bit=True,
                     device_map=self.config.device_map,
                 )
-                logger.info("Loaded model using unsloth (bfloat16)")
+                logger.info("Loaded model using unsloth (4-bit)")
                 return model, tokenizer
             except ImportError:
                 logger.warning("Unsloth not found, falling back to transformers")
@@ -71,7 +70,7 @@ class ModelLoader:
                     f"Unsloth loading failed: {e}. Falling back to transformers"
                 )
 
-            # Fallback to transformers (16-bit)
+            # Fallback to transformers (16-bit) if unsloth fails
             model = AutoModelForCausalLM.from_pretrained(
                 self.config.model_name,
                 torch_dtype=torch.bfloat16,
