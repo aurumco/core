@@ -11,3 +11,4 @@ matplotlib>=3.8.0
 onnx>=1.15.0
 optimum>=1.16.0
 unsloth
+gguf
