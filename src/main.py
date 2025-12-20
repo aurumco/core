@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Dict, Any, List, Set
 
 import torch
-from safetensors.torch import save_file
 
 # 1. Environment Setup (Prevent Fragmentation)
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -222,18 +221,13 @@ def main() -> None:
                     param.detach().cpu().to(dtype=torch.float16)
                 )
 
-        # 6.2 Save Decomposed Safetensors (Step 1 requirement)
+        # 6.2 Skip Decomposed Safetensors saving to save disk space (Antifragile strategy)
         svd_model_path = safetensors_dir / "model_svd.safetensors"
-        logger.info(f"Saving decomposed model to {svd_model_path}...")
-        save_file(decomposed_state_dict, svd_model_path)
+        logger.info("Skipping intermediate safetensors dump to save disk space.")
 
         # Save tokenizer and config to same dir for completeness
         model.config.save_pretrained(safetensors_dir)
         tokenizer.save_pretrained(safetensors_dir)
-
-        # Free RAM
-        del decomposed_state_dict
-        gc.collect()
 
         try:
             # 6.3 Convert to Custom GGUF (Step 1)
@@ -241,8 +235,16 @@ def main() -> None:
             gguf_dir.mkdir(parents=True, exist_ok=True)
             gguf_path = gguf_dir / "model_fp16.gguf"
 
-            logger.info("converting to Custom GGUF...")
-            convert_to_custom_gguf(svd_model_path, gguf_path, model.config)
+            logger.info("Converting to Custom GGUF directly from memory...")
+            convert_to_custom_gguf(
+                output_path=gguf_path,
+                config=model.config,
+                state_dict=decomposed_state_dict,
+            )
+
+            # Free RAM now that GGUF is written
+            del decomposed_state_dict
+            gc.collect()
 
             # 6.4 Quantize (Step 2)
             final_quantized_path = gguf_dir / "model_q4_k_m.gguf"
@@ -252,16 +254,15 @@ def main() -> None:
             # Cleanup intermediate heavy files to save space?
             # User constraint: "Kaggle 20GB".
             # We have:
-            # 1. model_svd.safetensors (~8GB)
-            # 2. model_fp16.gguf (~8GB)
-            # 3. model_q4_k_m.gguf (~2GB)
-            # Total ~18GB. Very risky.
-            # We should delete intermediate files after usage.
+            # 1. model_fp16.gguf (~8GB)
+            # 2. model_q4_k_m.gguf (~2GB)
+            # Total ~10GB. Much better.
 
             logger.info("Cleaning up intermediate files...")
             if gguf_path.exists():
                 os.remove(gguf_path)
             if svd_model_path.exists():
+                # Should not exist, but just in case
                 os.remove(svd_model_path)
 
             logger.info(f"Export Success! Final model: {final_quantized_path}")
