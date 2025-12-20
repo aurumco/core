@@ -7,13 +7,14 @@ of binary quantization tools.
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, Optional
 
 import gguf
 import torch
 from safetensors.torch import load_file
 
 from src.utils.logging import setup_logger
+from src.utils.ui import ConsoleUI
 
 logger = setup_logger(__name__)
 
@@ -75,17 +76,29 @@ def get_qwen_tensor_name(name: str) -> str:
 
 
 def convert_to_custom_gguf(
-    safetensors_path: Path, output_path: Path, config: Any
+    output_path: Path,
+    config: Any,
+    state_dict: Optional[Dict[str, torch.Tensor]] = None,
+    safetensors_path: Optional[Path] = None,
 ) -> None:
     """Converts a decomposed safetensors model to a custom GGUF file.
 
     Args:
-        safetensors_path: Path to the input safetensors file.
         output_path: Path to save the GGUF file.
         config: Model configuration object (transformers config).
+        state_dict: Optional dictionary of tensors in memory.
+        safetensors_path: Optional path to load tensors from if state_dict is None.
+
+    Raises:
+        ValueError: If neither state_dict nor safetensors_path is provided.
     """
-    logger.info(f"Loading tensors from {safetensors_path}...")
-    state_dict = load_file(safetensors_path)
+    if state_dict is None:
+        if safetensors_path is None:
+            raise ValueError("Either state_dict or safetensors_path must be provided.")
+        logger.info(f"Loading tensors from {safetensors_path}...")
+        state_dict = load_file(safetensors_path)
+    else:
+        logger.info("Using provided state_dict from memory...")
 
     gguf_writer = gguf.GGUFWriter(output_path, "qwen2")
 
@@ -119,7 +132,16 @@ def convert_to_custom_gguf(
     # Tensors
     logger.info("Writing tensors...")
 
-    for key, tensor in state_dict.items():
+    # Wrap with progress bar
+    items = list(state_dict.items())
+    pbar = ConsoleUI.progress_bar(
+        items, total=len(items), prefix="GGUF Conversion", length=30
+    )
+
+    for item in pbar:  # type: ignore
+        key: str = item[0]  # type: ignore
+        tensor: torch.Tensor = item[1]  # type: ignore
+
         # Determine tensor name
         # Key examples: "model.layers.0.self_attn.q_proj.weight", "...q_proj.u", "...q_proj.v"
 
@@ -153,7 +175,7 @@ def convert_to_custom_gguf(
         # 3. Add to GGUF
         gguf_writer.add_tensor(gguf_name, data)
 
-    logger.info("Saving GGUF file...")
+    logger.info("Saving GGUF file to disk...")
     gguf_writer.write_header_to_file()
     gguf_writer.write_kv_data_to_file()
     gguf_writer.write_tensors_to_file()
