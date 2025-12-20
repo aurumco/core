@@ -1,13 +1,18 @@
 # AI Subspace Extraction Pipeline
+Extracts the Core (Subspace) from Language Models using ASVD.
 
-Extracts the "AI Core" (Subspace) from 4-bit Quantized Language Models using SVD.
+<p align="center">
 
-[![CI](https://img.shields.io/github/actions/workflow/status/USER/REPO/ci.yml?style=flat&logo=github&label=CI)](link)
-[![Coverage](https://img.shields.io/codecov/c/github/USER/REPO?style=flat&logo=codecov&label=Coverage)](link)
-[![License](https://img.shields.io/github/license/USER/REPO?style=flat&label=License)](link)
-[![Version](https://img.shields.io/github/v/release/USER/REPO?style=flat&label=Version)](link)
+[![Version](https://img.shields.io/badge/Version-0.1.0--beta-000000?style=flat&colorA=000000&colorB=000000&label=Version)](https://github.com/aurumco/core/releases)
+[![License](https://img.shields.io/badge/License-AGPL--3.0-000000?style=flat&colorA=000000&colorB=000000&label=License)](https://www.gnu.org/licenses/agpl-3.0.en.html)
+[![Security](https://img.shields.io/badge/Security-Audited-000000?style=flat&colorA=000000&colorB=000000&logo=osv&label=Security)](https://github.com/aurumco/core/security)
+[![Activity](https://img.shields.io/github/commit-activity/m/aurumco/core?style=flat&colorA=000000&colorB=000000&label=Velocity)](https://github.com/aurumco/core/graphs/commit-activity)
 
-This project performs "Model Surgery" on LLMs (like Qwen) by dequantizing layers, decomposing them via Singular Value Decomposition (SVD), and truncating singular values to retain only the essential information (subspace), effectively compressing the model's knowledge into a low-rank format.
+</p>
+  
+
+
+This project performs "Model Surgery" on LLMs (like Qwen, Gemma, Llama) by dequantizing layers, decomposing them via Singular Value Decomposition (SVD), and truncating singular values to retain only the essential information (subspace), effectively compressing the model's knowledge into a low-rank format.
 
 ---
 
@@ -22,7 +27,6 @@ pip install -r requirements.txt
 ```python
 from src.main import main
 
-# Run the full pipeline
 if __name__ == "__main__":
     main()
 ```
@@ -34,10 +38,7 @@ if __name__ == "__main__":
 - **Subspace Extraction**: Uses SVD to isolate and truncate essential features.
 - **Antifragile Export**: Automatically compresses and prepares artifacts for upload.
 
-## Documentation
-
-See [docs/](docs/) for detailed guides and API reference (Coming soon).
 
 ## License
 
-Licensed under MIT - see [LICENSE](LICENSE) file.
+Licensed under AGPL-3.0.
